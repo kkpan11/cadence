@@ -118,6 +118,7 @@ func (s *RingpopSuite) TestDNSMode() {
 	s.Nil(err)
 	s.Equal("test", cfg.Name)
 	s.Equal(BootstrapModeDNS, cfg.BootstrapMode)
+	s.Equal("10.66.1.71", cfg.BroadcastAddress)
 	s.Nil(cfg.validate())
 	logger := testlogger.New(s.T())
 
@@ -220,22 +221,22 @@ func (s *RingpopSuite) TestDNSSRVMode() {
 		"duplicate entries should be removed",
 	)
 
-	//Expect unknown-duplicate.example.net to not resolve
+	// Expect unknown-duplicate.example.net to not resolve
 	_, err = cfg.DiscoveryProvider.Hosts()
 	s.NotNil(err)
 
-	//Remove known bad hosts from Unresolved list
+	// Remove known bad hosts from Unresolved list
 	provider.UnresolvedHosts = []string{
 		"service-a.example.net",
 		"service-b.example.net",
 		"badhostport",
 	}
 
-	//Expect badhostport to not seperate service name
+	// Expect badhostport to not seperate service name
 	_, err = cfg.DiscoveryProvider.Hosts()
 	s.NotNil(err)
 
-	//Remove known bad hosts from Unresolved list
+	// Remove known bad hosts from Unresolved list
 	provider.UnresolvedHosts = []string{
 		"service-a.example.net",
 		"service-b.example.net",
@@ -297,6 +298,7 @@ maxJoinDuration: 30s`
 func getDNSConfig() string {
 	return `name: "test"
 bootstrapMode: "dns"
+broadcastAddress: "10.66.1.71"
 bootstrapHosts:
 - example.net:1111
 - example.net:1112

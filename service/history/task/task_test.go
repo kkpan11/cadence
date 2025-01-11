@@ -21,17 +21,19 @@
 package task
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/cache"
 	"github.com/uber/cadence/common/dynamicconfig"
+	cadence_errors "github.com/uber/cadence/common/errors"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/testlogger"
 	"github.com/uber/cadence/common/persistence"
@@ -157,15 +159,15 @@ func (s *taskSuite) TestHandleErr_ErrTargetDomainNotActive() {
 		return true, nil
 	}, nil)
 
-	err := errTargetDomainNotActive
+	err := &types.DomainNotActiveError{}
 
 	// we should always return the target domain not active error
 	// no matter that the submit time is
-	taskBase.submitTime = time.Now().Add(-cache.DomainCacheRefreshInterval * time.Duration(2))
-	s.Equal(nil, taskBase.HandleErr(err))
+	taskBase.submitTime = time.Now().Add(-cache.DomainCacheRefreshInterval*time.Duration(5) - time.Second)
+	s.Equal(nil, taskBase.HandleErr(err), "should drop errors after a reasonable time")
 
 	taskBase.submitTime = time.Now()
-	s.Equal(nil, taskBase.HandleErr(err))
+	s.Equal(err, taskBase.HandleErr(err))
 }
 
 func (s *taskSuite) TestHandleErr_ErrDomainNotActive() {
@@ -175,11 +177,52 @@ func (s *taskSuite) TestHandleErr_ErrDomainNotActive() {
 
 	err := &types.DomainNotActiveError{}
 
-	taskBase.submitTime = time.Now().Add(-cache.DomainCacheRefreshInterval * time.Duration(2))
+	taskBase.submitTime = time.Now().Add(-cache.DomainCacheRefreshInterval*time.Duration(5) - time.Second)
 	s.NoError(taskBase.HandleErr(err))
 
 	taskBase.submitTime = time.Now()
 	s.Equal(err, taskBase.HandleErr(err))
+}
+
+func (s *taskSuite) TestHandleErr_ErrWorkflowRateLimited() {
+	taskBase := s.newTestTask(func(task Info) (bool, error) {
+		return true, nil
+	}, nil)
+
+	taskBase.submitTime = time.Now()
+	s.Equal(errWorkflowRateLimited, taskBase.HandleErr(errWorkflowRateLimited))
+}
+
+func (s *taskSuite) TestHandleErr_ErrShardRecentlyClosed() {
+	taskBase := s.newTestTask(func(task Info) (bool, error) {
+		return true, nil
+	}, nil)
+
+	taskBase.submitTime = time.Now()
+
+	shardClosedError := &shard.ErrShardClosed{
+		Msg: "shard closed",
+		// The shard was closed within the TimeBeforeShardClosedIsError interval
+		ClosedAt: time.Now().Add(-shard.TimeBeforeShardClosedIsError / 2),
+	}
+
+	s.Equal(shardClosedError, taskBase.HandleErr(shardClosedError))
+}
+
+func (s *taskSuite) TestHandleErr_ErrTaskListNotOwnedByHost() {
+	taskBase := s.newTestTask(func(task Info) (bool, error) {
+		return true, nil
+	}, nil)
+
+	taskBase.submitTime = time.Now()
+
+	taskListNotOwnedByHost := &cadence_errors.TaskListNotOwnedByHostError{
+		OwnedByIdentity: "HostNameOwnedBy",
+		MyIdentity:      "HostNameMe",
+		TasklistName:    "TaskListName",
+	}
+
+	s.Equal(taskListNotOwnedByHost, taskBase.HandleErr(taskListNotOwnedByHost))
 }
 
 func (s *taskSuite) TestHandleErr_ErrCurrentWorkflowConditionFailed() {
@@ -278,6 +321,20 @@ func (s *taskSuite) TestHandleErr_ErrMaxAttempts() {
 	assert.NotPanics(s.T(), func() {
 		taskBase.HandleErr(errors.New("err"))
 	})
+}
+
+func (s *taskSuite) TestRetryErr() {
+	taskBase := s.newTestTask(func(task Info) (bool, error) {
+		return true, nil
+	}, nil)
+
+	s.Equal(false, taskBase.RetryErr(&shard.ErrShardClosed{}))
+	s.Equal(false, taskBase.RetryErr(errWorkflowBusy))
+	s.Equal(false, taskBase.RetryErr(ErrTaskPendingActive))
+	s.Equal(false, taskBase.RetryErr(context.DeadlineExceeded))
+	s.Equal(false, taskBase.RetryErr(&redispatchError{Reason: "random-reason"}))
+	// rate limited errors are retried
+	s.Equal(true, taskBase.RetryErr(errWorkflowRateLimited))
 }
 
 func (s *taskSuite) newTestTask(

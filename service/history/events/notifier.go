@@ -31,12 +31,15 @@ import (
 	"github.com/uber/cadence/common/collection"
 	"github.com/uber/cadence/common/definition"
 	"github.com/uber/cadence/common/metrics"
+	"github.com/uber/cadence/common/persistence"
 	"github.com/uber/cadence/common/types"
 )
 
 const (
 	eventsChanSize = 1000
 )
+
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination notifier_mock.go -self_package github.com/uber/cadence/service/history/events
 
 type (
 	// Notifier is a pub-sub for sending and receiving notifications on new history events
@@ -54,9 +57,9 @@ type (
 		NextEventID            int64
 		PreviousStartedEventID int64
 		Timestamp              time.Time
-		CurrentBranchToken     []byte
 		WorkflowState          int
 		WorkflowCloseState     int
+		VersionHistories       *persistence.VersionHistories
 	}
 
 	notifierImpl struct {
@@ -88,9 +91,9 @@ func NewNotification(
 	lastFirstEventID int64,
 	nextEventID int64,
 	previousStartedEventID int64,
-	currentBranchToken []byte,
 	workflowState int,
 	workflowCloseState int,
+	versionHistories *persistence.VersionHistories,
 ) *Notification {
 
 	return &Notification{
@@ -102,9 +105,9 @@ func NewNotification(
 		LastFirstEventID:       lastFirstEventID,
 		NextEventID:            nextEventID,
 		PreviousStartedEventID: previousStartedEventID,
-		CurrentBranchToken:     currentBranchToken,
 		WorkflowState:          workflowState,
 		WorkflowCloseState:     workflowCloseState,
+		VersionHistories:       versionHistories,
 	}
 }
 

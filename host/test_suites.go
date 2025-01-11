@@ -60,4 +60,24 @@ type (
 		*require.Assertions
 		*IntegrationBase
 	}
+
+	MatchingSimulationSuite struct {
+		*require.Assertions
+		*IntegrationBase
+	}
+
+	WorkflowIDRateLimitIntegrationSuite struct {
+		*require.Assertions
+		*IntegrationBase
+	}
+
+	WorkflowIDInternalRateLimitIntegrationSuite struct {
+		*require.Assertions
+		*IntegrationBase
+	}
+
+	TaskListIsolationIntegrationSuite struct {
+		*require.Assertions
+		*IntegrationBase
+	}
 )

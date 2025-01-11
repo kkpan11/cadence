@@ -61,7 +61,7 @@ type (
 		shard           shard.Context
 		timeSource      clock.TimeSource
 		domainCache     cache.DomainCache
-		executionCache  *execution.Cache
+		executionCache  execution.Cache
 		tokenSerializer common.TaskTokenSerializer
 		metricsClient   metrics.Client
 		logger          log.Logger
@@ -74,7 +74,7 @@ type (
 // NewHandler creates a new Handler for handling decision business logic
 func NewHandler(
 	shard shard.Context,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	tokenSerializer common.TaskTokenSerializer,
 ) Handler {
 	config := shard.GetConfig()
@@ -277,7 +277,7 @@ func (handler *handlerImpl) HandleDecisionTaskFailed(
 			}
 
 			_, err := mutableState.AddDecisionTaskFailedEvent(decision.ScheduleID, decision.StartedID, request.GetCause(), request.Details,
-				request.GetIdentity(), "", request.GetBinaryChecksum(), "", "", 0)
+				request.GetIdentity(), "", request.GetBinaryChecksum(), "", "", 0, "")
 			return err
 		})
 }
@@ -425,6 +425,7 @@ Update_History_Loop:
 			failMessage = fmt.Sprintf("binary %v is already marked as bad deployment", binChecksum)
 		} else {
 			workflowSizeChecker := newWorkflowSizeChecker(
+				domainName,
 				handler.config.BlobSizeLimitWarn(domainName),
 				handler.config.BlobSizeLimitError(domainName),
 				handler.config.HistorySizeLimitWarn(domainName),
@@ -435,7 +436,7 @@ Update_History_Loop:
 				msBuilder,
 				executionStats,
 				handler.metricsClient.Scope(metrics.HistoryRespondDecisionTaskCompletedScope, metrics.DomainTag(domainName)),
-				handler.throttledLogger,
+				handler.logger,
 			)
 
 			decisionTaskHandler := newDecisionTaskHandler(
@@ -725,7 +726,15 @@ func (handler *handlerImpl) handleBufferedQueries(
 
 	// Consistent query requires both server and client worker support. If a consistent query was requested (meaning there are
 	// buffered queries) but worker does not support consistent query then all buffered queries should be failed.
-	if versionErr := handler.versionChecker.SupportsConsistentQuery(clientImpl, clientFeatureVersion); versionErr != nil {
+	versionErr := handler.versionChecker.SupportsConsistentQuery(clientImpl, clientFeatureVersion)
+	// todo (David.Porter) remove the skip on version check for
+	// clientImpl and clientFeatureVersion where they're nil
+	// There's a bug, probably in matching somewhere which isn't
+	// forwarding the client headers for version
+	// info correctly making this call erroneously fail sometimes.
+	// https://t3.uberinternal.com/browse/CDNC-8641
+	// So defaulting just this flow to fail-open in the absence of headers.
+	if versionErr != nil && clientImpl != "" && clientFeatureVersion != "" {
 		scope.IncCounter(metrics.WorkerNotSupportsConsistentQueryCount)
 		failedTerminationState := &query.TerminationState{
 			TerminationType: query.TerminationTypeFailed,
@@ -771,10 +780,11 @@ func (handler *handlerImpl) handleBufferedQueries(
 			sizeLimitWarn,
 			sizeLimitError,
 			domainID,
+			domain,
 			workflowID,
 			runID,
 			scope,
-			handler.throttledLogger,
+			handler.logger,
 			tag.BlobSizeViolationOperation("ConsistentQuery"),
 		); err != nil {
 			handler.logger.Info("failing query because query result size is too large",
@@ -858,7 +868,7 @@ func (handler *handlerImpl) failDecisionHelper(
 	}
 
 	if _, err = mutableState.AddDecisionTaskFailedEvent(
-		scheduleID, startedID, cause, details, request.GetIdentity(), "", request.GetBinaryChecksum(), "", "", 0,
+		scheduleID, startedID, cause, details, request.GetIdentity(), "", request.GetBinaryChecksum(), "", "", 0, "",
 	); err != nil {
 		return nil, err
 	}

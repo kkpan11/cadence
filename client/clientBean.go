@@ -33,6 +33,7 @@ import (
 	"github.com/uber/cadence/client/frontend"
 	"github.com/uber/cadence/client/history"
 	"github.com/uber/cadence/client/matching"
+	"github.com/uber/cadence/client/wrappers/timeout"
 	"github.com/uber/cadence/common/cluster"
 )
 
@@ -40,6 +41,7 @@ type (
 	// Bean in an collection of clients
 	Bean interface {
 		GetHistoryClient() history.Client
+		GetHistoryPeers() history.PeerResolver
 		GetMatchingClient(domainIDToName DomainIDToNameFunc) (matching.Client, error)
 		GetFrontendClient() frontend.Client
 		GetRemoteAdminClient(cluster string) admin.Client
@@ -50,6 +52,7 @@ type (
 	clientBeanImpl struct {
 		sync.Mutex
 		historyClient         history.Client
+		historyPeers          history.PeerResolver
 		matchingClient        atomic.Value
 		frontendClient        frontend.Client
 		remoteAdminClients    map[string]admin.Client
@@ -61,7 +64,7 @@ type (
 // NewClientBean provides a collection of clients
 func NewClientBean(factory Factory, dispatcher *yarpc.Dispatcher, clusterMetadata cluster.Metadata) (Bean, error) {
 
-	historyClient, err := factory.NewHistoryClient()
+	historyClient, historyPeers, err := factory.NewHistoryClient()
 	if err != nil {
 		return nil, err
 	}
@@ -73,8 +76,8 @@ func NewClientBean(factory Factory, dispatcher *yarpc.Dispatcher, clusterMetadat
 
 		adminClient, err := factory.NewAdminClientWithTimeoutAndConfig(
 			clientConfig,
-			admin.DefaultTimeout,
-			admin.DefaultLargeTimeout,
+			timeout.AdminDefaultTimeout,
+			timeout.AdminDefaultLargeTimeout,
 		)
 		if err != nil {
 			return nil, err
@@ -82,8 +85,8 @@ func NewClientBean(factory Factory, dispatcher *yarpc.Dispatcher, clusterMetadat
 
 		frontendClient, err := factory.NewFrontendClientWithTimeoutAndConfig(
 			clientConfig,
-			frontend.DefaultTimeout,
-			frontend.DefaultLongPollTimeout,
+			timeout.FrontendDefaultTimeout,
+			timeout.FrontendDefaultLongPollTimeout,
 		)
 		if err != nil {
 			return nil, err
@@ -96,6 +99,7 @@ func NewClientBean(factory Factory, dispatcher *yarpc.Dispatcher, clusterMetadat
 	return &clientBeanImpl{
 		factory:               factory,
 		historyClient:         historyClient,
+		historyPeers:          historyPeers,
 		frontendClient:        remoteFrontendClients[clusterMetadata.GetCurrentClusterName()],
 		remoteAdminClients:    remoteAdminClients,
 		remoteFrontendClients: remoteFrontendClients,
@@ -104,6 +108,10 @@ func NewClientBean(factory Factory, dispatcher *yarpc.Dispatcher, clusterMetadat
 
 func (h *clientBeanImpl) GetHistoryClient() history.Client {
 	return h.historyClient
+}
+
+func (h *clientBeanImpl) GetHistoryPeers() history.PeerResolver {
+	return h.historyPeers
 }
 
 func (h *clientBeanImpl) GetMatchingClient(domainIDToName DomainIDToNameFunc) (matching.Client, error) {

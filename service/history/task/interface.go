@@ -72,6 +72,7 @@ type (
 	// Executor contains the execution logic for Task
 	Executor interface {
 		Execute(task Task, shouldProcessTask bool) error
+		Stop()
 	}
 
 	// Filter filters Task
@@ -111,7 +112,7 @@ type (
 		Fetch(shardID int, fetchParams ...interface{}) future.Future
 	}
 
-	//Fetchers is a group of Fetchers, one for each source cluster
+	// Fetchers is a group of Fetchers, one for each source cluster
 	Fetchers []Fetcher
 
 	// QueueType is the type of task queue

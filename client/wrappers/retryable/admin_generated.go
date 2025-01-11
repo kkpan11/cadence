@@ -144,17 +144,6 @@ func (c *adminClient) DescribeWorkflowExecution(ctx context.Context, ap1 *types.
 	return resp, err
 }
 
-func (c *adminClient) GetCrossClusterTasks(ctx context.Context, gp1 *types.GetCrossClusterTasksRequest, p1 ...yarpc.CallOption) (gp2 *types.GetCrossClusterTasksResponse, err error) {
-	var resp *types.GetCrossClusterTasksResponse
-	op := func() error {
-		var err error
-		resp, err = c.client.GetCrossClusterTasks(ctx, gp1, p1...)
-		return err
-	}
-	err = c.throttleRetry.Do(ctx, op)
-	return resp, err
-}
-
 func (c *adminClient) GetDLQReplicationMessages(ctx context.Context, gp1 *types.GetDLQReplicationMessagesRequest, p1 ...yarpc.CallOption) (gp2 *types.GetDLQReplicationMessagesResponse, err error) {
 	var resp *types.GetDLQReplicationMessagesResponse
 	op := func() error {
@@ -329,17 +318,6 @@ func (c *adminClient) ResetQueue(ctx context.Context, rp1 *types.ResetQueueReque
 	return c.throttleRetry.Do(ctx, op)
 }
 
-func (c *adminClient) RespondCrossClusterTasksCompleted(ctx context.Context, rp1 *types.RespondCrossClusterTasksCompletedRequest, p1 ...yarpc.CallOption) (rp2 *types.RespondCrossClusterTasksCompletedResponse, err error) {
-	var resp *types.RespondCrossClusterTasksCompletedResponse
-	op := func() error {
-		var err error
-		resp, err = c.client.RespondCrossClusterTasksCompleted(ctx, rp1, p1...)
-		return err
-	}
-	err = c.throttleRetry.Do(ctx, op)
-	return resp, err
-}
-
 func (c *adminClient) RestoreDynamicConfig(ctx context.Context, rp1 *types.RestoreDynamicConfigRequest, p1 ...yarpc.CallOption) (err error) {
 	op := func() error {
 		return c.client.RestoreDynamicConfig(ctx, rp1, p1...)
@@ -381,6 +359,17 @@ func (c *adminClient) UpdateGlobalIsolationGroups(ctx context.Context, request *
 	op := func() error {
 		var err error
 		resp, err = c.client.UpdateGlobalIsolationGroups(ctx, request, opts...)
+		return err
+	}
+	err = c.throttleRetry.Do(ctx, op)
+	return resp, err
+}
+
+func (c *adminClient) UpdateTaskListPartitionConfig(ctx context.Context, request *types.UpdateTaskListPartitionConfigRequest, opts ...yarpc.CallOption) (up1 *types.UpdateTaskListPartitionConfigResponse, err error) {
+	var resp *types.UpdateTaskListPartitionConfigResponse
+	op := func() error {
+		var err error
+		resp, err = c.client.UpdateTaskListPartitionConfig(ctx, request, opts...)
 		return err
 	}
 	err = c.throttleRetry.Do(ctx, op)

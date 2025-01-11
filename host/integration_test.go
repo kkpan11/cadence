@@ -42,7 +42,7 @@ import (
 	"github.com/uber/cadence/common/types"
 	"github.com/uber/cadence/service/history/engine/engineimpl"
 	"github.com/uber/cadence/service/history/execution"
-	"github.com/uber/cadence/service/matching"
+	"github.com/uber/cadence/service/matching/tasklist"
 )
 
 func TestIntegrationSuite(t *testing.T) {
@@ -131,11 +131,10 @@ func (s *IntegrationSuite) TestStartWorkflowExecution() {
 	}
 	ctx, cancel = createContext()
 	defer cancel()
-	we2, err2 := s.engine.StartWorkflowExecution(ctx, newRequest)
+	_, err2 := s.engine.StartWorkflowExecution(ctx, newRequest)
 	s.NotNil(err2)
 	s.IsType(&types.WorkflowExecutionAlreadyStartedError{}, err2)
 	s.T().Logf("Unable to start workflow execution: %v\n", err2.Error())
-	s.Nil(we2)
 }
 
 func (s *IntegrationSuite) TestStartWorkflowExecution_StartTimestampMatch() {
@@ -270,11 +269,10 @@ func (s *IntegrationSuite) TestStartWorkflowExecution_IDReusePolicy() {
 	for _, policy := range policies {
 		newRequest := createStartRequest(policy)
 		ctx, cancel := createContext()
-		we1, err1 := s.engine.StartWorkflowExecution(ctx, newRequest)
+		_, err1 := s.engine.StartWorkflowExecution(ctx, newRequest)
 		cancel()
 		s.Error(err1)
 		s.IsType(&types.WorkflowExecutionAlreadyStartedError{}, err1)
-		s.Nil(we1)
 	}
 
 	// Test TerminateIfRunning policy when workflow is running
@@ -371,20 +369,18 @@ GetHistoryLoop:
 	newRequest = createStartRequest(policy)
 	ctx, cancel = createContext()
 	defer cancel()
-	we3, err3 = s.engine.StartWorkflowExecution(ctx, newRequest)
+	_, err3 = s.engine.StartWorkflowExecution(ctx, newRequest)
 	s.Error(err3)
 	s.IsType(&types.WorkflowExecutionAlreadyStartedError{}, err3)
-	s.Nil(we3)
 
 	// test policy RejectDuplicate
 	policy = types.WorkflowIDReusePolicyRejectDuplicate
 	newRequest = createStartRequest(policy)
 	ctx, cancel = createContext()
 	defer cancel()
-	we3, err3 = s.engine.StartWorkflowExecution(ctx, newRequest)
+	_, err3 = s.engine.StartWorkflowExecution(ctx, newRequest)
 	s.Error(err3)
 	s.IsType(&types.WorkflowExecutionAlreadyStartedError{}, err3)
-	s.Nil(we3)
 
 	// test policy AllowDuplicate
 	policy = types.WorkflowIDReusePolicyAllowDuplicate
@@ -924,11 +920,11 @@ func (s *IntegrationSuite) TestDecisionAndActivityTimeoutsWorkflow() {
 			history := historyResponse.History
 			common.PrettyPrintHistory(history, s.Logger)
 		}
-		s.True(err == nil || err == matching.ErrNoTasks, "%v", err)
+		s.True(err == nil || err == tasklist.ErrNoTasks, "%v", err)
 		if !dropDecisionTask {
 			s.Logger.Info("Calling Activity Task: %d", tag.Counter(i))
 			err = poller.PollAndProcessActivityTask(i%4 == 0)
-			s.True(err == nil || err == matching.ErrNoTasks)
+			s.True(err == nil || err == tasklist.ErrNoTasks)
 		}
 	}
 
@@ -1086,7 +1082,7 @@ func (s *IntegrationSuite) TestWorkflowRetryFailures() {
 				{
 					DecisionType: types.DecisionTypeFailWorkflowExecution.Ptr(),
 					FailWorkflowExecutionDecisionAttributes: &types.FailWorkflowExecutionDecisionAttributes{
-						//Reason:  common.StringPtr("retryable-error"),
+						// Reason:  common.StringPtr("retryable-error"),
 						Reason:  common.StringPtr(errorReason),
 						Details: nil,
 					},
@@ -1235,7 +1231,7 @@ func (s *IntegrationSuite) TestCronWorkflow() {
 		ExecutionStartToCloseTimeoutSeconds: common.Int32Ptr(100),
 		TaskStartToCloseTimeoutSeconds:      common.Int32Ptr(1),
 		Identity:                            identity,
-		CronSchedule:                        cronSchedule, //minimum interval by standard spec is 1m (* * * * *), use non-standard descriptor for short interval for test
+		CronSchedule:                        cronSchedule, // minimum interval by standard spec is 1m (* * * * *), use non-standard descriptor for short interval for test
 		Memo:                                memo,
 		SearchAttributes:                    searchAttr,
 	}
@@ -1468,7 +1464,7 @@ func (s *IntegrationSuite) TestCronWorkflowTimeout() {
 		ExecutionStartToCloseTimeoutSeconds: common.Int32Ptr(1), // set workflow timeout to 1s
 		TaskStartToCloseTimeoutSeconds:      common.Int32Ptr(1),
 		Identity:                            identity,
-		CronSchedule:                        cronSchedule, //minimum interval by standard spec is 1m (* * * * *), use non-standard descriptor for short interval for test
+		CronSchedule:                        cronSchedule, // minimum interval by standard spec is 1m (* * * * *), use non-standard descriptor for short interval for test
 		Memo:                                memo,
 		SearchAttributes:                    searchAttr,
 		RetryPolicy:                         retryPolicy,
@@ -2554,7 +2550,7 @@ func (s *IntegrationSuite) TestCronChildWorkflowExecution() {
 	sort.Slice(closedExecutions, func(i, j int) bool {
 		return closedExecutions[i].GetStartTime() < closedExecutions[j].GetStartTime()
 	})
-	//The first parent is not the cron workflow, only verify child workflow with cron schedule
+	// The first parent is not the cron workflow, only verify child workflow with cron schedule
 	lastExecution := closedExecutions[1]
 	for i := 2; i != 4; i++ {
 		executionInfo := closedExecutions[i]
@@ -2705,7 +2701,7 @@ func (s *IntegrationSuite) TestDecisionTaskFailed() {
 	signalCount := 0
 	sendSignal := false
 	lastDecisionTimestamp := int64(0)
-	//var signalEvent *types.HistoryEvent
+	// var signalEvent *types.HistoryEvent
 	dtHandler := func(execution *types.WorkflowExecution, wt *types.WorkflowType,
 		previousStartedEventID, startedEventID int64, history *types.History) ([]byte, []*types.Decision, error) {
 		// Count signals
@@ -2953,14 +2949,34 @@ func (s *IntegrationSuite) TestDescribeTaskList() {
 	testDescribeTaskList := func(domain string, tasklist *types.TaskList, tasklistType types.TaskListType) []*types.PollerInfo {
 		ctx, cancel := createContext()
 		defer cancel()
-		responseInner, errInner := s.engine.DescribeTaskList(ctx, &types.DescribeTaskListRequest{
-			Domain:       domain,
-			TaskList:     taskList,
-			TaskListType: &tasklistType,
+		listResp, err := s.engine.ListTaskListPartitions(ctx, &types.ListTaskListPartitionsRequest{
+			Domain:   domain,
+			TaskList: tasklist,
 		})
-
-		s.Nil(errInner)
-		return responseInner.Pollers
+		s.NoError(err)
+		pollers := make(map[string]*types.PollerInfo)
+		var partitions []*types.TaskListPartitionMetadata
+		if tasklistType == types.TaskListTypeActivity {
+			partitions = listResp.ActivityTaskListPartitions
+		} else {
+			partitions = listResp.DecisionTaskListPartitions
+		}
+		for _, partition := range partitions {
+			responseInner, errInner := s.engine.DescribeTaskList(ctx, &types.DescribeTaskListRequest{
+				Domain:       domain,
+				TaskList:     &types.TaskList{Name: partition.Key, Kind: tasklist.Kind},
+				TaskListType: &tasklistType,
+			})
+			s.Nil(errInner)
+			for _, poller := range responseInner.Pollers {
+				pollers[poller.GetIdentity()] = poller
+			}
+		}
+		var results []*types.PollerInfo
+		for _, poller := range pollers {
+			results = append(results, poller)
+		}
+		return results
 	}
 
 	before := time.Now()
@@ -3035,7 +3051,7 @@ func (s *IntegrationSuite) TestTransientDecisionTimeout() {
 	workflowComplete := false
 	failDecision := true
 	signalCount := 0
-	//var signalEvent *types.HistoryEvent
+	// var signalEvent *types.HistoryEvent
 	dtHandler := func(execution *types.WorkflowExecution, wt *types.WorkflowType,
 		previousStartedEventID, startedEventID int64, history *types.History) ([]byte, []*types.Decision, error) {
 		if failDecision {
@@ -3698,7 +3714,7 @@ func (s *IntegrationSuite) TestStickyTasklistResetThenTimeout() {
 
 	ctx, cancel = createContext()
 	defer cancel()
-	//Reset sticky tasklist before sticky decision task starts
+	// Reset sticky tasklist before sticky decision task starts
 	s.engine.ResetStickyTaskList(ctx, &types.ResetStickyTaskListRequest{
 		Domain:    s.domainName,
 		Execution: workflowExecution,

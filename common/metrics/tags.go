@@ -21,7 +21,7 @@
 package metrics
 
 import (
-	"fmt"
+	"regexp"
 	"strconv"
 )
 
@@ -33,35 +33,55 @@ const (
 	goVersionTag      = "go_version"
 	cadenceVersionTag = "cadence_version"
 
-	instance               = "instance"
-	domain                 = "domain"
-	domainType             = "domain_type"
-	clusterGroup           = "cluster_group"
-	sourceCluster          = "source_cluster"
-	targetCluster          = "target_cluster"
-	activeCluster          = "active_cluster"
-	taskList               = "tasklist"
-	taskListType           = "tasklistType"
-	workflowType           = "workflowType"
-	activityType           = "activityType"
-	decisionType           = "decisionType"
-	invariantType          = "invariantType"
-	shardScannerScanResult = "shardscanner_scan_result"
-	shardScannerFixResult  = "shardscanner_fix_result"
-	kafkaPartition         = "kafkaPartition"
-	transport              = "transport"
-	caller                 = "caller"
-	service                = "service"
-	signalName             = "signalName"
-	workflowVersion        = "workflow_version"
-	shardID                = "shard_id"
-	matchingHost           = "matching_host"
-	host                   = "host"
-	pollerIsolationGroup   = "poller_isolation_group"
-	asyncWFRequestType     = "async_wf_request_type"
+	instance                  = "instance"
+	domain                    = "domain"
+	domainType                = "domain_type"
+	clusterGroup              = "cluster_group"
+	sourceCluster             = "source_cluster"
+	targetCluster             = "target_cluster"
+	activeCluster             = "active_cluster"
+	taskList                  = "tasklist"
+	taskListType              = "tasklistType"
+	taskListRootPartition     = "tasklist_root_partition"
+	workflowType              = "workflowType"
+	activityType              = "activityType"
+	decisionType              = "decisionType"
+	invariantType             = "invariantType"
+	shardScannerScanResult    = "shardscanner_scan_result"
+	shardScannerFixResult     = "shardscanner_fix_result"
+	kafkaPartition            = "kafkaPartition"
+	transport                 = "transport"
+	caller                    = "caller"
+	service                   = "service"
+	destService               = "dest_service"
+	signalName                = "signalName"
+	workflowVersion           = "workflow_version"
+	shardID                   = "shard_id"
+	matchingHost              = "matching_host"
+	host                      = "host"
+	pollerIsolationGroup      = "poller_isolation_group"
+	asyncWFRequestType        = "async_wf_request_type"
+	workflowTerminationReason = "workflow_termination_reason"
+	workflowCloseStatus       = "workflow_close_status"
+	isolationEnabled          = "isolation_enabled"
+	isolationGroup            = "isolation_group"
+	originalIsolationGroup    = "original_isolation_group"
+	leakCause                 = "leak_cause"
+	topic                     = "topic"
+	mode                      = "mode"
+
+	// limiter-side tags
+	globalRatelimitKey            = "global_ratelimit_key"
+	globalRatelimitType           = "global_ratelimit_type"
+	globalRatelimitIsPrimary      = "is_primary"
+	globalRatelimitCollectionName = "global_ratelimit_collection"
 
 	allValue     = "all"
 	unknownValue = "_unknown_"
+)
+
+var (
+	safeAlphaNumericStringRE = regexp.MustCompile(`[^a-zA-Z0-9]`)
 )
 
 // Tag is an interface to define metrics tags
@@ -158,6 +178,14 @@ func TaskListTypeTag(value string) Tag {
 	return metricWithUnknown(taskListType, value)
 }
 
+// TaskListRootPartition returns a new task list root partition tag.
+func TaskListRootPartitionTag(value string) Tag {
+	if len(value) == 0 {
+		value = unknownValue
+	}
+	return simpleMetric{key: taskListRootPartition, value: sanitizer.Value(value)}
+}
+
 // WorkflowTypeTag returns a new workflow type tag.
 func WorkflowTypeTag(value string) Tag {
 	return metricWithUnknown(workflowType, value)
@@ -203,9 +231,14 @@ func CallerTag(value string) Tag {
 	return simpleMetric{key: caller, value: value}
 }
 
-// CallerTag returns a new RPC Caller type tag.
+// ServiceTag returns a new service tag.
 func ServiceTag(value string) Tag {
 	return simpleMetric{key: service, value: value}
+}
+
+// DestServiceTag returns a new destination service tag.
+func DestServiceTag(value string) Tag {
+	return simpleMetric{key: destService, value: value}
 }
 
 // Hosttag emits the host identifier
@@ -242,17 +275,74 @@ func AsyncWFRequestTypeTag(value string) Tag {
 	return metricWithUnknown(asyncWFRequestType, value)
 }
 
-// PartitionConfigTags returns a list of partition config tags
-func PartitionConfigTags(partitionConfig map[string]string) []Tag {
-	tags := make([]Tag, 0, len(partitionConfig))
-	for k, v := range partitionConfig {
-		if len(k) == 0 {
-			continue
-		}
-		if len(v) == 0 {
-			v = unknownValue
-		}
-		tags = append(tags, simpleMetric{key: sanitizer.Value(fmt.Sprintf("pk_%s", k)), value: sanitizer.Value(v)})
+// GlobalRatelimiterKeyTag reports the local ratelimit key being used, e.g. "domain-x".
+// This will likely be ambiguous if it is not combined with the collection name,
+// but keeping this untouched helps keep the values template-friendly and correlate-able
+// in metrics dashboards and queries.
+func GlobalRatelimiterKeyTag(value string) Tag {
+	return simpleMetric{key: globalRatelimitKey, value: value}
+}
+
+// GlobalRatelimiterTypeTag reports the "limit usage type" being reported, e.g. global vs local
+func GlobalRatelimiterTypeTag(value string) Tag {
+	return simpleMetric{key: globalRatelimitType, value: value}
+}
+
+func GlobalRatelimiterIsPrimary(isPrimary bool) Tag {
+	value := "false"
+	if isPrimary {
+		value = "true"
 	}
-	return tags
+	return simpleMetric{key: globalRatelimitIsPrimary, value: value}
+}
+
+// GlobalRatelimiterCollectionName is a namespacing tag to uniquely identify metrics
+// coming from the different ratelimiter collections (user, worker, visibility, async).
+func GlobalRatelimiterCollectionName(value string) Tag {
+	return simpleMetric{key: globalRatelimitCollectionName, value: value}
+}
+
+// WorkflowTerminationReasonTag reports the reason for workflow termination
+func WorkflowTerminationReasonTag(value string) Tag {
+	value = safeAlphaNumericStringRE.ReplaceAllString(value, "_")
+	return simpleMetric{key: workflowTerminationReason, value: value}
+}
+
+// WorkflowCloseStatusTag is a stringified workflow status
+func WorkflowCloseStatusTag(value string) Tag {
+	value = safeAlphaNumericStringRE.ReplaceAllString(value, "_")
+	return simpleMetric{key: workflowCloseStatus, value: value}
+}
+
+func OriginalIsolationGroupTag(group string) Tag {
+	return simpleMetric{key: originalIsolationGroup, value: sanitizer.Value(group)}
+}
+
+func IsolationGroupTag(group string) Tag {
+	return simpleMetric{key: isolationGroup, value: sanitizer.Value(group)}
+}
+
+func IsolationLeakCause(cause string) Tag {
+	return simpleMetric{key: leakCause, value: sanitizer.Value(cause)}
+}
+
+// IsolationEnabledTag returns whether isolation is enabled
+func IsolationEnabledTag(enabled bool) Tag {
+	v := "false"
+	if enabled {
+		v = "true"
+	}
+	return simpleMetric{key: isolationEnabled, value: v}
+}
+
+func TopicTag(value string) Tag {
+	return metricWithUnknown(topic, value)
+}
+
+func ModeTag(value string) Tag {
+	return metricWithUnknown(mode, value)
+}
+
+func NamespaceTag(namespace string) Tag {
+	return metricWithUnknown("namespace", namespace)
 }

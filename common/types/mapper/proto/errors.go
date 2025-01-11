@@ -27,8 +27,11 @@ import (
 	"go.uber.org/yarpc/encoding/protobuf"
 	"go.uber.org/yarpc/yarpcerrors"
 
+	sharddistributorv1 "github.com/uber/cadence/.gen/proto/sharddistributor/v1"
 	sharedv1 "github.com/uber/cadence/.gen/proto/shared/v1"
+	cadence_errors "github.com/uber/cadence/common/errors"
 	"github.com/uber/cadence/common/types"
+	"github.com/uber/cadence/common/types/mapper/errorutils"
 )
 
 func FromError(err error) error {
@@ -36,74 +39,56 @@ func FromError(err error) error {
 		return protobuf.NewError(yarpcerrors.CodeOK, "")
 	}
 
-	switch e := err.(type) {
-	case *types.AccessDeniedError:
-		return protobuf.NewError(yarpcerrors.CodePermissionDenied, e.Message)
-	case *types.InternalServiceError:
-		return protobuf.NewError(yarpcerrors.CodeInternal, e.Message)
-	case *types.EntityNotExistsError:
-		return protobuf.NewError(yarpcerrors.CodeNotFound, e.Message, protobuf.WithErrorDetails(&apiv1.EntityNotExistsError{
-			CurrentCluster: e.CurrentCluster,
-			ActiveCluster:  e.ActiveCluster,
-		}))
-	case *types.WorkflowExecutionAlreadyCompletedError:
-		return protobuf.NewError(yarpcerrors.CodeNotFound, e.Message, protobuf.WithErrorDetails(&apiv1.WorkflowExecutionAlreadyCompletedError{}))
-	case *types.BadRequestError:
-		return protobuf.NewError(yarpcerrors.CodeInvalidArgument, e.Message)
-	case *types.QueryFailedError:
-		return protobuf.NewError(yarpcerrors.CodeInvalidArgument, e.Message, protobuf.WithErrorDetails(&apiv1.QueryFailedError{}))
-	case *types.ShardOwnershipLostError:
-		return protobuf.NewError(yarpcerrors.CodeAborted, e.Message, protobuf.WithErrorDetails(&sharedv1.ShardOwnershipLostError{
-			Owner: e.Owner,
-		}))
-	case *types.CurrentBranchChangedError:
-		return protobuf.NewError(yarpcerrors.CodeAborted, e.Message, protobuf.WithErrorDetails(&sharedv1.CurrentBranchChangedError{
-			CurrentBranchToken: e.GetCurrentBranchToken(),
-		}))
-	case *types.RetryTaskV2Error:
-		return protobuf.NewError(yarpcerrors.CodeAborted, e.Message, protobuf.WithErrorDetails(&sharedv1.RetryTaskV2Error{
-			DomainId:          e.DomainID,
-			WorkflowExecution: FromWorkflowRunPair(e.WorkflowID, e.RunID),
-			StartEvent:        FromEventIDVersionPair(e.StartEventID, e.StartEventVersion),
-			EndEvent:          FromEventIDVersionPair(e.EndEventID, e.EndEventVersion),
-		}))
-	case *types.CancellationAlreadyRequestedError:
-		return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&apiv1.CancellationAlreadyRequestedError{}))
-	case *types.DomainAlreadyExistsError:
-		return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&apiv1.DomainAlreadyExistsError{}))
-	case *types.EventAlreadyStartedError:
-		return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&sharedv1.EventAlreadyStartedError{}))
-	case *types.WorkflowExecutionAlreadyStartedError:
-		return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&apiv1.WorkflowExecutionAlreadyStartedError{
-			StartRequestId: e.StartRequestID,
-			RunId:          e.RunID,
-		}))
-	case *types.ClientVersionNotSupportedError:
-		return protobuf.NewError(yarpcerrors.CodeFailedPrecondition, "Client version not supported", protobuf.WithErrorDetails(&apiv1.ClientVersionNotSupportedError{
-			FeatureVersion:    e.FeatureVersion,
-			ClientImpl:        e.ClientImpl,
-			SupportedVersions: e.SupportedVersions,
-		}))
-	case *types.FeatureNotEnabledError:
-		return protobuf.NewError(yarpcerrors.CodeFailedPrecondition, "Feature flag not enabled", protobuf.WithErrorDetails(&apiv1.FeatureNotEnabledError{
-			FeatureFlag: e.FeatureFlag,
-		}))
-	case *types.DomainNotActiveError:
-		return protobuf.NewError(yarpcerrors.CodeFailedPrecondition, e.Message, protobuf.WithErrorDetails(&apiv1.DomainNotActiveError{
-			Domain:         e.DomainName,
-			CurrentCluster: e.CurrentCluster,
-			ActiveCluster:  e.ActiveCluster,
-		}))
-	case *types.InternalDataInconsistencyError:
-		return protobuf.NewError(yarpcerrors.CodeDataLoss, e.Message, protobuf.WithErrorDetails(&sharedv1.InternalDataInconsistencyError{}))
-	case *types.LimitExceededError:
-		return protobuf.NewError(yarpcerrors.CodeResourceExhausted, e.Message, protobuf.WithErrorDetails(&apiv1.LimitExceededError{}))
-	case *types.ServiceBusyError:
-		return protobuf.NewError(yarpcerrors.CodeResourceExhausted, e.Message, protobuf.WithErrorDetails(&apiv1.ServiceBusyError{}))
-	case *types.RemoteSyncMatchedError:
-		return protobuf.NewError(yarpcerrors.CodeUnavailable, e.Message, protobuf.WithErrorDetails(&sharedv1.RemoteSyncMatchedError{}))
-	case *types.StickyWorkerUnavailableError:
-		return protobuf.NewError(yarpcerrors.CodeUnavailable, e.Message, protobuf.WithErrorDetails(&apiv1.StickyWorkerUnavailableError{}))
+	var (
+		ok       bool
+		typedErr error
+	)
+	if ok, typedErr = errorutils.ConvertError(err, fromAccessDeniedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromInternalServiceError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromEntityNotExistsError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromWorkflowExecutionAlreadyCompletedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromBadRequestError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromQueryFailedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromShardOwnershipLostError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromTaskListNotOwnedByHostError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromCurrentBranchChangedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromRetryTaskV2Error); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromCancellationAlreadyRequestedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromDomainAlreadyExistsError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromEventAlreadyStartedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromWorkflowExecutionAlreadyStartedError); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromClientVersionNotSupportedErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromFeatureNotEnabledErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromDomainNotActive); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromInternalDataInconsistencyErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromLimitExceededErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromServiceBusyErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromRemoteSyncMatchedErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromStickyWorkerUnavailableErr); ok {
+		return typedErr
+	} else if ok, typedErr = errorutils.ConvertError(err, fromNamespaceNotFoundErr); ok {
+		return typedErr
 	}
 
 	return protobuf.NewError(yarpcerrors.CodeUnknown, err.Error())
@@ -136,6 +121,10 @@ func ToError(err error) error {
 			return &types.WorkflowExecutionAlreadyCompletedError{
 				Message: status.Message(),
 			}
+		case *sharddistributorv1.NamespaceNotFoundError:
+			return &types.NamespaceNotFoundError{
+				Namespace: details.Namespace,
+			}
 		}
 	case yarpcerrors.CodeInvalidArgument:
 		switch getErrorDetails(err).(type) {
@@ -154,6 +143,12 @@ func ToError(err error) error {
 			return &types.ShardOwnershipLostError{
 				Message: status.Message(),
 				Owner:   details.Owner,
+			}
+		case *sharedv1.TaskListNotOwnedByHostError:
+			return &cadence_errors.TaskListNotOwnedByHostError{
+				OwnedByIdentity: details.OwnedByIdentity,
+				MyIdentity:      details.MyIdentity,
+				TasklistName:    details.TaskListName,
 			}
 		case *sharedv1.CurrentBranchChangedError:
 			return &types.CurrentBranchChangedError{
@@ -218,7 +213,7 @@ func ToError(err error) error {
 			}
 		}
 	case yarpcerrors.CodeResourceExhausted:
-		switch getErrorDetails(err).(type) {
+		switch details := getErrorDetails(err).(type) {
 		case *apiv1.LimitExceededError:
 			return &types.LimitExceededError{
 				Message: status.Message(),
@@ -226,6 +221,7 @@ func ToError(err error) error {
 		case *apiv1.ServiceBusyError:
 			return &types.ServiceBusyError{
 				Message: status.Message(),
+				Reason:  details.Reason,
 			}
 		}
 	case yarpcerrors.CodeUnavailable:
@@ -254,4 +250,129 @@ func getErrorDetails(err error) interface{} {
 		return details[0]
 	}
 	return nil
+}
+
+func fromAccessDeniedError(e *types.AccessDeniedError) error {
+	return protobuf.NewError(yarpcerrors.CodePermissionDenied, e.Message)
+}
+
+func fromInternalServiceError(e *types.InternalServiceError) error {
+	return protobuf.NewError(yarpcerrors.CodeInternal, e.Message)
+}
+
+func fromEntityNotExistsError(e *types.EntityNotExistsError) error {
+	return protobuf.NewError(yarpcerrors.CodeNotFound, e.Message, protobuf.WithErrorDetails(&apiv1.EntityNotExistsError{
+		CurrentCluster: e.CurrentCluster,
+		ActiveCluster:  e.ActiveCluster,
+	}))
+}
+
+func fromWorkflowExecutionAlreadyCompletedError(e *types.WorkflowExecutionAlreadyCompletedError) error {
+	return protobuf.NewError(yarpcerrors.CodeNotFound, e.Message, protobuf.WithErrorDetails(&apiv1.WorkflowExecutionAlreadyCompletedError{}))
+}
+
+func fromBadRequestError(e *types.BadRequestError) error {
+	return protobuf.NewError(yarpcerrors.CodeInvalidArgument, e.Message)
+}
+
+func fromQueryFailedError(e *types.QueryFailedError) error {
+	return protobuf.NewError(yarpcerrors.CodeInvalidArgument, e.Message, protobuf.WithErrorDetails(&apiv1.QueryFailedError{}))
+}
+
+func fromShardOwnershipLostError(e *types.ShardOwnershipLostError) error {
+	return protobuf.NewError(yarpcerrors.CodeAborted, e.Message, protobuf.WithErrorDetails(&sharedv1.ShardOwnershipLostError{
+		Owner: e.Owner,
+	}))
+}
+
+func fromTaskListNotOwnedByHostError(e *cadence_errors.TaskListNotOwnedByHostError) error {
+	return protobuf.NewError(yarpcerrors.CodeAborted, e.Error(), protobuf.WithErrorDetails(&sharedv1.TaskListNotOwnedByHostError{
+		OwnedByIdentity: e.OwnedByIdentity,
+		MyIdentity:      e.MyIdentity,
+		TaskListName:    e.TasklistName,
+	}))
+}
+
+func fromCurrentBranchChangedError(e *types.CurrentBranchChangedError) error {
+	return protobuf.NewError(yarpcerrors.CodeAborted, e.Message, protobuf.WithErrorDetails(&sharedv1.CurrentBranchChangedError{
+		CurrentBranchToken: e.GetCurrentBranchToken(),
+	}))
+}
+
+func fromRetryTaskV2Error(e *types.RetryTaskV2Error) error {
+	return protobuf.NewError(yarpcerrors.CodeAborted, e.Message, protobuf.WithErrorDetails(&sharedv1.RetryTaskV2Error{
+		DomainId:          e.DomainID,
+		WorkflowExecution: FromWorkflowRunPair(e.WorkflowID, e.RunID),
+		StartEvent:        FromEventIDVersionPair(e.StartEventID, e.StartEventVersion),
+		EndEvent:          FromEventIDVersionPair(e.EndEventID, e.EndEventVersion),
+	}))
+}
+
+func fromCancellationAlreadyRequestedError(e *types.CancellationAlreadyRequestedError) error {
+	return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&apiv1.CancellationAlreadyRequestedError{}))
+}
+
+func fromDomainAlreadyExistsError(e *types.DomainAlreadyExistsError) error {
+	return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&apiv1.DomainAlreadyExistsError{}))
+}
+
+func fromEventAlreadyStartedError(e *types.EventAlreadyStartedError) error {
+	return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&sharedv1.EventAlreadyStartedError{}))
+}
+
+func fromWorkflowExecutionAlreadyStartedError(e *types.WorkflowExecutionAlreadyStartedError) error {
+	return protobuf.NewError(yarpcerrors.CodeAlreadyExists, e.Message, protobuf.WithErrorDetails(&apiv1.WorkflowExecutionAlreadyStartedError{
+		StartRequestId: e.StartRequestID,
+		RunId:          e.RunID,
+	}))
+}
+
+func fromClientVersionNotSupportedErr(e *types.ClientVersionNotSupportedError) error {
+	return protobuf.NewError(yarpcerrors.CodeFailedPrecondition, "Client version not supported", protobuf.WithErrorDetails(&apiv1.ClientVersionNotSupportedError{
+		FeatureVersion:    e.FeatureVersion,
+		ClientImpl:        e.ClientImpl,
+		SupportedVersions: e.SupportedVersions,
+	}))
+}
+
+func fromFeatureNotEnabledErr(e *types.FeatureNotEnabledError) error {
+	return protobuf.NewError(yarpcerrors.CodeFailedPrecondition, "Feature flag not enabled", protobuf.WithErrorDetails(&apiv1.FeatureNotEnabledError{
+		FeatureFlag: e.FeatureFlag,
+	}))
+}
+
+func fromDomainNotActive(e *types.DomainNotActiveError) error {
+	return protobuf.NewError(yarpcerrors.CodeFailedPrecondition, e.Message, protobuf.WithErrorDetails(&apiv1.DomainNotActiveError{
+		Domain:         e.DomainName,
+		CurrentCluster: e.CurrentCluster,
+		ActiveCluster:  e.ActiveCluster,
+	}))
+}
+
+func fromInternalDataInconsistencyErr(e *types.InternalDataInconsistencyError) error {
+	return protobuf.NewError(yarpcerrors.CodeDataLoss, e.Message, protobuf.WithErrorDetails(&sharedv1.InternalDataInconsistencyError{}))
+}
+
+func fromLimitExceededErr(e *types.LimitExceededError) error {
+	return protobuf.NewError(yarpcerrors.CodeResourceExhausted, e.Message, protobuf.WithErrorDetails(&apiv1.LimitExceededError{}))
+}
+
+func fromServiceBusyErr(e *types.ServiceBusyError) error {
+	return protobuf.NewError(yarpcerrors.CodeResourceExhausted, e.Message, protobuf.WithErrorDetails(&apiv1.ServiceBusyError{
+		Reason: e.Reason,
+	}))
+}
+
+func fromRemoteSyncMatchedErr(e *types.RemoteSyncMatchedError) error {
+	return protobuf.NewError(yarpcerrors.CodeUnavailable, e.Message, protobuf.WithErrorDetails(&sharedv1.RemoteSyncMatchedError{}))
+}
+
+func fromStickyWorkerUnavailableErr(e *types.StickyWorkerUnavailableError) error {
+	return protobuf.NewError(yarpcerrors.CodeUnavailable, e.Message, protobuf.WithErrorDetails(&apiv1.StickyWorkerUnavailableError{}))
+}
+
+func fromNamespaceNotFoundErr(e *types.NamespaceNotFoundError) error {
+	return protobuf.NewError(yarpcerrors.CodeNotFound, e.Error(), protobuf.WithErrorDetails(&sharddistributorv1.NamespaceNotFoundError{
+		Namespace: e.Namespace,
+	}))
 }

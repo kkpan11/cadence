@@ -26,11 +26,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/cache"
@@ -61,7 +61,7 @@ type (
 		mockExecutionMgr *mocks.ExecutionManager
 
 		logger         log.Logger
-		executionCache *execution.Cache
+		executionCache execution.Cache
 
 		activityReplicator ActivityReplicator
 	}
@@ -106,7 +106,6 @@ func (s *activityReplicatorSuite) SetupTest() {
 	s.mockEngine.EXPECT().NotifyNewHistoryEvent(gomock.Any()).AnyTimes()
 	s.mockEngine.EXPECT().NotifyNewTransferTasks(gomock.Any()).AnyTimes()
 	s.mockEngine.EXPECT().NotifyNewTimerTasks(gomock.Any()).AnyTimes()
-	s.mockEngine.EXPECT().NotifyNewCrossClusterTasks(gomock.Any()).AnyTimes()
 	s.mockShard.SetEngine(s.mockEngine)
 
 	s.activityReplicator = NewActivityReplicator(
@@ -141,6 +140,7 @@ func (s *activityReplicatorSuite) TestSyncActivity_WorkflowNotFound() {
 			RunID:      runID,
 		},
 		DomainName: domainName,
+		RangeID:    1,
 	}).Return(nil, &types.EntityNotExistsError{})
 	s.mockDomainCache.EXPECT().GetDomainByID(domainID).Return(
 		cache.NewGlobalDomainCacheEntryForTest(
@@ -1142,6 +1142,7 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityRunning() {
 		nil,
 		execution.TransactionPolicyPassive,
 		nil,
+		persistence.CreateWorkflowRequestModeReplicated,
 	).Return(nil).Times(1)
 	err = s.activityReplicator.SyncActivity(ctx.Background(), request)
 	s.NoError(err)
@@ -1229,6 +1230,7 @@ func (s *activityReplicatorSuite) TestSyncActivity_ActivityRunning_ZombieWorkflo
 		nil,
 		execution.TransactionPolicyPassive,
 		nil,
+		persistence.CreateWorkflowRequestModeReplicated,
 	).Return(nil).Times(1)
 	err = s.activityReplicator.SyncActivity(ctx.Background(), request)
 	s.NoError(err)

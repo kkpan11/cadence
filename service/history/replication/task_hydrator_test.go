@@ -29,10 +29,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/cache"
@@ -507,7 +507,7 @@ func TestHistoryLoader_GetEventBlob(t *testing.T) {
 			domains: fakeDomainCache{testDomainID: testDomain},
 			mockHistory: func(hm *mocks.HistoryV2Manager) {
 				hm.On("ReadRawHistoryBranch", mock.Anything, mock.Anything).Return(&persistence.ReadRawHistoryBranchResponse{
-					HistoryEventBlobs: []*persistence.DataBlob{{}, {}}, //two blobs
+					HistoryEventBlobs: []*persistence.DataBlob{{}, {}}, // two blobs
 				}, nil)
 			},
 			expectErr: "replication hydrator encountered more than 1 NDC raw event batch",
@@ -595,6 +595,7 @@ func TestMutableStateLoader_GetMutableState(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, expectedMS, ms)
 	assert.NotNil(t, release)
+	release(nil)
 }
 
 func TestImmediateTaskHydrator(t *testing.T) {

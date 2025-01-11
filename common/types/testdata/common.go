@@ -45,6 +45,7 @@ const (
 	SignalName           = "SignalName"
 	QueryType            = "QueryType"
 	HostName             = "HostName"
+	HostName2            = "HostName2"
 	Identity             = "Identity"
 	CronSchedule         = "CronSchedule"
 	Checksum             = "Checksum"
@@ -56,8 +57,11 @@ const (
 	ClientImpl           = "ClientImpl"
 	ClientLibraryVersion = "ClientLibraryVersion"
 	SupportedVersions    = "SupportedVersions"
+	FeatureFlag          = "FeatureFlag"
+	Namespace            = "Namespace"
 
 	Attempt            = 2
+	ScheduleID         = 5
 	PageSize           = 10
 	HistoryLength      = 20
 	BacklogCountHint   = 30
@@ -111,6 +115,8 @@ var (
 	Payload3 = []byte{30, 0}
 )
 
+var Attempt2 = int64(2)
+
 var (
 	ExecutionContext = []byte{110, 0}
 	Control          = []byte{120, 0}
@@ -125,11 +131,9 @@ var (
 	FailureDetails = []byte{190, 0}
 )
 
-var (
-	PartitionConfig = map[string]string{
-		"zone": IsolationGroup,
-	}
-)
+var PartitionConfig = map[string]string{
+	"zone": IsolationGroup,
+}
 
 var (
 	HealthStatus = types.HealthStatus{
@@ -236,6 +240,13 @@ var (
 		AckLevel:         AckLevel,
 		RatePerSecond:    RatePerSecond,
 		TaskIDBlock:      &TaskIDBlock,
+		IsolationGroupMetrics: map[string]*types.IsolationGroupMetrics{
+			"dca": {
+				NewTasksPerSecond: 10,
+				PollerCount:       1,
+			},
+		},
+		NewTasksPerSecond: 10,
 	}
 	TaskIDBlock = types.TaskIDBlock{
 		StartID: 551,
@@ -254,6 +265,16 @@ var (
 	}
 	IndexedValueTypeMap = map[string]types.IndexedValueType{
 		"IndexedValueType1": IndexedValueType,
+	}
+	IsolationGroupConfiguration = types.IsolationGroupConfiguration{
+		IsolationGroup: {
+			Name:  IsolationGroup,
+			State: types.IsolationGroupStateHealthy,
+		},
+		"zone 1": {
+			Name:  "zone 1",
+			State: types.IsolationGroupStateDrained,
+		},
 	}
 	ParentExecutionInfo = types.ParentExecutionInfo{
 		DomainUUID:  DomainID,
@@ -404,6 +425,7 @@ var (
 		LastWorkerIdentity:     Identity,
 		LastFailureDetails:     FailureDetails,
 		StartedWorkerIdentity:  Identity,
+		ScheduleID:             ScheduleID,
 	}
 	PendingActivityInfoArray = []*types.PendingActivityInfo{
 		&PendingActivityInfo,
@@ -425,5 +447,10 @@ var (
 		StartedTimestamp:           &Timestamp2,
 		Attempt:                    Attempt,
 		OriginalScheduledTimestamp: &Timestamp3,
+		ScheduleID:                 ScheduleID,
+	}
+	AutoConfigHint = types.AutoConfigHint{
+		EnableAutoConfig:   false,
+		PollerWaitTimeInMs: 10,
 	}
 )

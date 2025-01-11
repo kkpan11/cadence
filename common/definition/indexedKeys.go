@@ -52,13 +52,14 @@ const (
 	CadenceChangeVersion = "CadenceChangeVersion"
 )
 
-// valid non-indexed fields on ES
 const (
+	// Memo is valid non-indexed fields on ES
 	Memo = "Memo"
+	// Attr is prefix of custom search attributes
+	Attr = "Attr"
+	// HeaderFormat is the format of context headers in search attributes
+	HeaderFormat = "Header_%s"
 )
-
-// Attr is prefix of custom search attributes
-const Attr = "Attr"
 
 // defaultIndexedKeys defines all searchable keys
 var defaultIndexedKeys = createDefaultIndexedKeys()
@@ -108,4 +109,9 @@ var systemIndexedKeys = map[string]interface{}{
 func IsSystemIndexedKey(key string) bool {
 	_, ok := systemIndexedKeys[key]
 	return ok
+}
+
+// IsSystemBoolKey return true is key is system added bool key
+func IsSystemBoolKey(key string) bool {
+	return systemIndexedKeys[key] == types.IndexedValueTypeBool
 }

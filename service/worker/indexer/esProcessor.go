@@ -100,6 +100,7 @@ func newESProcessor(
 func (p *ESProcessorImpl) Start() {
 	// current implementation (v6 and v7) allows to invoke Start() multiple times
 	p.bulkProcessor.Start(context.Background())
+
 }
 func (p *ESProcessorImpl) Stop() {
 	p.bulkProcessor.Stop() //nolint:errcheck
@@ -134,7 +135,10 @@ func (p *ESProcessorImpl) bulkAfterAction(id int64, requests []bulk.GenericBulka
 
 		isRetryable := isResponseRetriable(err.Status)
 		for _, request := range requests {
-			if !isRetryable {
+			if isRetryable {
+				// retryable errors will be retried by the bulk processor
+				p.logger.Error("ES request failed", tag.ESRequest(request.String()))
+			} else {
 				key := p.retrieveKafkaKey(request)
 				if key == "" {
 					continue
@@ -146,9 +150,36 @@ func (p *ESProcessorImpl) bulkAfterAction(id int64, requests []bulk.GenericBulka
 					tag.WorkflowID(wid),
 					tag.WorkflowRunID(rid),
 					tag.WorkflowDomainID(domainID))
-				p.nackKafkaMsg(key)
-			} else {
-				p.logger.Error("ES request failed", tag.ESRequest(request.String()))
+
+				// check if it is a delete request and status code
+				// 404 means the document does not exist
+				// 409 means means the document's version does not match (or if the document has been updated or deleted by another process)
+				// this can happen during the data migration, the doc was deleted in the old index but not exists in the new index
+				if err.Status == 409 {
+					p.logger.Info("Request encountered a version conflict. Acknowledging to prevent retry.",
+						tag.ESResponseStatus(err.Status), tag.ESRequest(request.String()),
+						tag.WorkflowID(wid),
+						tag.WorkflowRunID(rid),
+						tag.WorkflowDomainID(domainID))
+					p.ackKafkaMsg(key)
+				} else if err.Status == 404 {
+					req, err := request.Source()
+					if err == nil && p.isDeleteRequest(req) {
+						p.logger.Info("Document has been deleted. Acknowledging to prevent retry.",
+							tag.ESResponseStatus(404), tag.ESRequest(request.String()),
+							tag.WorkflowID(wid),
+							tag.WorkflowRunID(rid),
+							tag.WorkflowDomainID(domainID))
+						p.ackKafkaMsg(key)
+					} else {
+						p.logger.Error("Get request source err.", tag.Error(err), tag.ESRequest(request.String()))
+						p.scope.IncCounter(metrics.ESProcessorCorruptedData)
+						p.nackKafkaMsg(key)
+					}
+				} else {
+					// For all other non-retryable errors, nack the message
+					p.nackKafkaMsg(key)
+				}
 			}
 			p.scope.IncCounter(metrics.ESProcessorFailures)
 		}
@@ -224,7 +255,7 @@ func (p *ESProcessorImpl) retrieveKafkaKey(request bulk.GenericBulkableRequest) 
 	}
 
 	var key string
-	if len(req) == 2 { // index or update requests
+	if !p.isDeleteRequest(req) { // index or update requests
 		var body map[string]interface{}
 		if err := json.Unmarshal([]byte(req[1]), &body); err != nil {
 			p.logger.Error("Unmarshal index request body err.", tag.Error(err))
@@ -287,6 +318,16 @@ func (p *ESProcessorImpl) hashFn(key interface{}) uint32 {
 	return uint32(common.WorkflowIDToHistoryShard(id, numOfShards))
 }
 
+func (p *ESProcessorImpl) isDeleteRequest(request []string) bool {
+	// The Source() method typically returns a slice of strings, where each string represents a part of the bulk request in JSON format.
+	// For delete operations, the Source() method typically returns only one part
+	// The metadata that specifies the delete action, including _index and _id.
+	// "{\"delete\":{\"_index\":\"my-index\",\"_id\":\"1\"}}"
+	// For index/update operations, the Source() method typically returns two parts
+	// reference: https://www.elastic.co/guide/en/elasticsearch/reference/6.8/docs-bulk.html
+	return len(request) == 1
+}
+
 // 409 - Version Conflict
 // 404 - Not Found
 func isResponseSuccess(status int) bool {
@@ -326,7 +367,7 @@ func newKafkaMessageWithMetrics(kafkaMsg messaging.Message, stopwatch *metrics.S
 }
 
 func (km *kafkaMessageWithMetrics) Ack() {
-	km.message.Ack() //nolint:errcheck
+	km.message.Ack() // nolint:errcheck
 	if km.swFromAddToAck != nil {
 		km.swFromAddToAck.Stop()
 	}

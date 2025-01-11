@@ -52,7 +52,7 @@ var (
 
 func LoadOnce(
 	ctx context.Context,
-	cache *execution.Cache,
+	cache execution.Cache,
 	domainID string,
 	workflowID string,
 	runID string,
@@ -81,7 +81,7 @@ func LoadOnce(
 
 func Load(
 	ctx context.Context,
-	cache *execution.Cache,
+	cache execution.Cache,
 	executionManager persistence.ExecutionManager,
 	domainID string,
 	domainName string,
@@ -127,14 +127,14 @@ func Load(
 	return nil, &types.InternalServiceError{Message: "unable to locate current workflow execution"}
 }
 
-///////////////////  Util function for updating workflows ///////////////////
+// /////////////////  Util function for updating workflows ///////////////////
 
 // UpdateWithActionFunc updates the given workflow execution.
 // If runID is empty, it only tries to load the current workflow once.
 // If the update should always be applied to the current run, use UpdateCurrentWithActionFunc instead.
 func UpdateWithActionFunc(
 	ctx context.Context,
-	cache *execution.Cache,
+	cache execution.Cache,
 	domainID string,
 	execution types.WorkflowExecution,
 	now time.Time,
@@ -155,7 +155,7 @@ func UpdateWithActionFunc(
 // This function is suitable for the case when the change should always be applied to the current execution.
 func UpdateCurrentWithActionFunc(
 	ctx context.Context,
-	cache *execution.Cache,
+	cache execution.Cache,
 	executionManager persistence.ExecutionManager,
 	domainID string,
 	domainCache cache.DomainCache,
@@ -180,7 +180,7 @@ func UpdateCurrentWithActionFunc(
 // TODO: deprecate and use UpdateWithActionFunc
 func UpdateWithAction(
 	ctx context.Context,
-	cache *execution.Cache,
+	cache execution.Cache,
 	domainID string,
 	execution types.WorkflowExecution,
 	createDecisionTask bool,
@@ -261,6 +261,9 @@ UpdateHistoryLoop:
 		}
 
 		err = workflowContext.GetContext().UpdateWorkflowExecutionAsActive(ctx, now)
+		if _, ok := err.(*persistence.DuplicateRequestError); ok {
+			return nil
+		}
 		if execution.IsConflictError(err) {
 			if attempt != ConditionalRetryCount-1 {
 				_, err = workflowContext.ReloadMutableState(ctx)

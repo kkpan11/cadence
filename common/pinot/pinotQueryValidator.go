@@ -33,13 +33,14 @@ import (
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/definition"
+	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/types"
 )
 
 // VisibilityQueryValidator for sql query validation
 type VisibilityQueryValidator struct {
-	validSearchAttributes map[string]interface{}
+	validSearchAttributes dynamicconfig.MapPropertyFn
 }
 
 var timeSystemKeys = map[string]bool{
@@ -50,7 +51,7 @@ var timeSystemKeys = map[string]bool{
 }
 
 // NewPinotQueryValidator create VisibilityQueryValidator
-func NewPinotQueryValidator(validSearchAttributes map[string]interface{}) *VisibilityQueryValidator {
+func NewPinotQueryValidator(validSearchAttributes dynamicconfig.MapPropertyFn) *VisibilityQueryValidator {
 	return &VisibilityQueryValidator{
 		validSearchAttributes: validSearchAttributes,
 	}
@@ -71,7 +72,7 @@ func (qv *VisibilityQueryValidator) ValidateQuery(whereClause string) (string, e
 
 		stmt, err := sqlparser.Parse(placeholderQuery)
 		if err != nil {
-			return "", &types.BadRequestError{Message: "Invalid query."}
+			return "", &types.BadRequestError{Message: "Invalid query: " + err.Error()}
 		}
 
 		sel, ok := stmt.(*sqlparser.Select)
@@ -124,7 +125,7 @@ func (qv *VisibilityQueryValidator) validateRangeExpr(expr sqlparser.Expr) (stri
 	}
 	colNameStr := colName.Name.String()
 
-	if !qv.isValidSearchAttributes(colNameStr) {
+	if !qv.IsValidSearchAttributes(colNameStr) {
 		return "", fmt.Errorf("invalid search attribute %q", colNameStr)
 	}
 
@@ -149,7 +150,7 @@ func (qv *VisibilityQueryValidator) validateRangeExpr(expr sqlparser.Expr) (stri
 		return buf.String(), nil
 	}
 
-	//lowerBound, ok := rangeCond.From.(*sqlparser.ColName)
+	// lowerBound, ok := rangeCond.From.(*sqlparser.ColName)
 	lowerBound, ok := rangeCond.From.(*sqlparser.SQLVal)
 	if !ok {
 		return "", errors.New("invalid range expression: fail to get lowerbound")
@@ -209,7 +210,7 @@ func (qv *VisibilityQueryValidator) validateComparisonExpr(expr sqlparser.Expr) 
 
 	colNameStr := colName.Name.String()
 
-	if !qv.isValidSearchAttributes(colNameStr) {
+	if !qv.IsValidSearchAttributes(colNameStr) {
 		return "", fmt.Errorf("invalid search attribute %q", colNameStr)
 	}
 
@@ -224,11 +225,29 @@ func (qv *VisibilityQueryValidator) validateComparisonExpr(expr sqlparser.Expr) 
 	return qv.processCustomKey(expr)
 }
 
-// isValidSearchAttributes return true if key is registered
-func (qv *VisibilityQueryValidator) isValidSearchAttributes(key string) bool {
-	validAttr := qv.validSearchAttributes
+// IsValidSearchAttributes return true if key is registered
+func (qv *VisibilityQueryValidator) IsValidSearchAttributes(key string) bool {
+	validAttr := qv.validSearchAttributes()
 	_, isValidKey := validAttr[key]
 	return isValidKey
+}
+
+func (qv *VisibilityQueryValidator) processSystemBoolKey(colNameStr string, comparisonExpr sqlparser.ComparisonExpr) (string, error) {
+	// case1: isCron = false
+	colVal, ok := comparisonExpr.Right.(sqlparser.BoolVal)
+	if !ok {
+		// case2: isCron = "false" or isCron = 'false'
+		sqlVal, ok := comparisonExpr.Right.(*sqlparser.SQLVal)
+		if !ok {
+			return "", fmt.Errorf("failed to process a bool key to SQLVal: %v", comparisonExpr.Right)
+		}
+		colValStr := string(sqlVal.Val)
+		if strings.ToLower(colValStr) != "false" && strings.ToLower(colValStr) != "true" {
+			return "", fmt.Errorf("invalid bool value in pinot_query_validator: %s", colValStr)
+		}
+		return fmt.Sprintf("%s = %s", colNameStr, colValStr), nil
+	}
+	return fmt.Sprintf("%s = %v", colNameStr, colVal), nil
 }
 
 func (qv *VisibilityQueryValidator) processSystemKey(expr sqlparser.Expr) (string, error) {
@@ -240,6 +259,20 @@ func (qv *VisibilityQueryValidator) processSystemKey(expr sqlparser.Expr) (strin
 		return "", fmt.Errorf("left comparison is invalid: %v", comparisonExpr.Left)
 	}
 	colNameStr := colName.Name.String()
+
+	// handle system bool key
+	if definition.IsSystemBoolKey(colNameStr) {
+		return qv.processSystemBoolKey(colNameStr, *comparisonExpr)
+	}
+
+	if comparisonExpr.Operator == sqlparser.LikeStr {
+		colVal, ok := comparisonExpr.Right.(*sqlparser.SQLVal)
+		if !ok {
+			return "", fmt.Errorf("right comparison is invalid: %v", comparisonExpr.Right)
+		}
+		colValStr := string(colVal.Val)
+		return fmt.Sprintf("TEXT_MATCH(%s, '/.*%s.*/')", colNameStr, colValStr), nil
+	}
 
 	if comparisonExpr.Operator != sqlparser.EqualStr && comparisonExpr.Operator != sqlparser.NotEqualStr {
 		if _, ok := timeSystemKeys[colNameStr]; ok {
@@ -313,6 +346,36 @@ func (qv *VisibilityQueryValidator) processSystemKey(expr sqlparser.Expr) (strin
 	return buf.String(), nil
 }
 
+func (qv *VisibilityQueryValidator) processInClause(expr sqlparser.Expr) (string, error) {
+	comparisonExpr, ok := expr.(*sqlparser.ComparisonExpr)
+	if !ok {
+		return "", errors.New("invalid IN expression")
+	}
+
+	colName, ok := comparisonExpr.Left.(*sqlparser.ColName)
+	if !ok {
+		return "", errors.New("invalid IN expression, left")
+	}
+
+	colNameStr := colName.Name.String()
+	valTuple, ok := comparisonExpr.Right.(sqlparser.ValTuple)
+	if !ok {
+		return "", errors.New("invalid IN expression, right")
+	}
+
+	values := make([]string, len(valTuple))
+	for i, val := range valTuple {
+		sqlVal, ok := val.(*sqlparser.SQLVal)
+		if !ok {
+			return "", errors.New("invalid IN expression, value")
+		}
+		values[i] = "''" + string(sqlVal.Val) + "''"
+	}
+
+	return fmt.Sprintf("JSON_MATCH(Attr, '\"$.%s\" IN (%s)') or JSON_MATCH(Attr, '\"$.%s[*]\" IN (%s)')",
+		colNameStr, strings.Join(values, ","), colNameStr, strings.Join(values, ",")), nil
+}
+
 func (qv *VisibilityQueryValidator) processCustomKey(expr sqlparser.Expr) (string, error) {
 	comparisonExpr := expr.(*sqlparser.ComparisonExpr)
 
@@ -324,9 +387,15 @@ func (qv *VisibilityQueryValidator) processCustomKey(expr sqlparser.Expr) (strin
 	colNameStr := colName.Name.String()
 
 	// check type: if is IndexedValueTypeString, change to like statement for partial match
-	valType, ok := qv.validSearchAttributes[colNameStr]
+	valType, ok := qv.validSearchAttributes()[colNameStr]
 	if !ok {
 		return "", fmt.Errorf("invalid search attribute")
+	}
+
+	// process IN clause in json indexed col: Attr
+	operator := strings.ToLower(comparisonExpr.Operator)
+	if operator == sqlparser.InStr {
+		return qv.processInClause(expr)
 	}
 
 	// get the column value
@@ -334,19 +403,23 @@ func (qv *VisibilityQueryValidator) processCustomKey(expr sqlparser.Expr) (strin
 	if !ok {
 		return "", errors.New("invalid comparison expression, right")
 	}
-	colValStr := string(colVal.Val)
 
 	// get the value type
 	indexValType := common.ConvertIndexedValueTypeToInternalType(valType, log.NewNoop())
-
-	operator := comparisonExpr.Operator
+	colValStr := string(colVal.Val)
 
 	switch indexValType {
 	case types.IndexedValueTypeString:
-		return processCustomString(comparisonExpr, colNameStr, colValStr), nil
+		return processCustomString(operator, colNameStr, colValStr), nil
 	case types.IndexedValueTypeKeyword:
 		return processCustomKeyword(operator, colNameStr, colValStr), nil
 	case types.IndexedValueTypeDatetime:
+		var err error
+		colVal, err = trimTimeFieldValueFromNanoToMilliSeconds(colVal)
+		if err != nil {
+			return "", fmt.Errorf("trim time field %s got error: %w", colNameStr, err)
+		}
+		colValStr := string(colVal.Val)
 		return processCustomNum(operator, colNameStr, colValStr, "BIGINT"), nil
 	case types.IndexedValueTypeDouble:
 		return processCustomNum(operator, colNameStr, colValStr, "DOUBLE"), nil
@@ -370,19 +443,40 @@ func processEqual(colNameStr string, colValStr string) string {
 }
 
 func processCustomKeyword(operator string, colNameStr string, colValStr string) string {
-	return fmt.Sprintf("(JSON_MATCH(Attr, '\"$.%s\"%s''%s''') or JSON_MATCH(Attr, '\"$.%s[*]\"%s''%s'''))",
-		colNameStr, operator, colValStr, colNameStr, operator, colValStr)
+	// edge case
+	if operator == "!=" {
+		return createKeywordQuery(operator, colNameStr, colValStr, "and", "NOT ")
+	}
+
+	return createKeywordQuery(operator, colNameStr, colValStr, "or", "")
 }
 
-func processCustomString(comparisonExpr *sqlparser.ComparisonExpr, colNameStr string, colValStr string) string {
-	// change to like statement for partial match
-	comparisonExpr.Operator = sqlparser.LikeStr
-	comparisonExpr.Right = &sqlparser.SQLVal{
-		Type: sqlparser.StrVal,
-		Val:  []byte("%" + colValStr + "%"),
+func createKeywordQuery(operator string, colNameStr string, colValStr string, connector string, notEqual string) string {
+	if colValStr == "" {
+		// partial match for an empty string (still it will only match empty string)
+		// so it equals to exact match for an empty string
+		return createCustomStringQuery(colNameStr, colValStr, notEqual)
 	}
-	return fmt.Sprintf("(JSON_MATCH(Attr, '\"$.%s\" is not null') "+
-		"AND REGEXP_LIKE(JSON_EXTRACT_SCALAR(Attr, '$.%s', 'string'), '%s*'))", colNameStr, colNameStr, colValStr)
+	return fmt.Sprintf("(JSON_MATCH(Attr, '\"$.%s\"%s''%s''') %s JSON_MATCH(Attr, '\"$.%s[*]\"%s''%s'''))",
+		colNameStr, operator, colValStr, connector, colNameStr, operator, colValStr)
+}
+
+func processCustomString(operator string, colNameStr string, colValStr string) string {
+	if operator == "!=" {
+		return createCustomStringQuery(colNameStr, colValStr, "NOT ")
+	}
+
+	return createCustomStringQuery(colNameStr, colValStr, "")
+}
+
+func createCustomStringQuery(colNameStr string, colValStr string, notEqual string) string {
+	// handle edge case
+	if colValStr == "" {
+		return fmt.Sprintf("JSON_MATCH(Attr, '\"$.%s\" is not null') "+
+			"AND %sJSON_MATCH(Attr, 'REGEXP_LIKE(\"$.%s\", ''^$'')')", colNameStr, notEqual, colNameStr)
+	}
+	return fmt.Sprintf("JSON_MATCH(Attr, '\"$.%s\" is not null') "+
+		"AND %sJSON_MATCH(Attr, 'REGEXP_LIKE(\"$.%s\", ''.*%s.*'')')", colNameStr, notEqual, colNameStr, colValStr)
 }
 
 func trimTimeFieldValueFromNanoToMilliSeconds(original *sqlparser.SQLVal) (*sqlparser.SQLVal, error) {
@@ -415,7 +509,7 @@ func parseTime(timeStr string) (int64, error) {
 	valInt, err := strconv.ParseInt(timeStr, 10, 64)
 	if err == nil {
 		var newVal int64
-		if valInt < 0 { //exclude open workflow which time field will be -1
+		if valInt < 0 { // exclude open workflow which time field will be -1
 			newVal = valInt
 		} else if len(timeStr) > 13 { // Assuming nanoseconds if more than 13 digits
 			newVal = valInt / 1000000 // Convert time to milliseconds
@@ -432,8 +526,13 @@ func parseCloseStatus(original *sqlparser.SQLVal) (*sqlparser.SQLVal, error) {
 	statusStr := string(original.Val)
 
 	// first check if already in int64 format
-	if _, err := strconv.ParseInt(statusStr, 10, 64); err == nil {
-		return original, nil
+	if status, err := strconv.ParseInt(statusStr, 10, 64); err == nil {
+		// Instead of returning the original value, return a new SQLVal that holds the integer value
+		// Or it will fail the case CloseStatus = '1'
+		return &sqlparser.SQLVal{
+			Type: sqlparser.IntVal,
+			Val:  []byte(strconv.FormatInt(status, 10)),
+		}, nil
 	}
 
 	// try to parse close status string

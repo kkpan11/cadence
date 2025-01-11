@@ -51,6 +51,7 @@ var (
 		Execution:           &WorkflowExecution,
 		ExpectedNextEventID: EventID1,
 		CurrentBranchToken:  BranchToken,
+		VersionHistoryItem:  &VersionHistoryItem,
 	}
 	HistoryGetMutableStateResponse = types.GetMutableStateResponse{
 		Execution:                            &WorkflowExecution,
@@ -147,6 +148,7 @@ var (
 		InitiatedID:        EventID1,
 		CompletedExecution: &WorkflowExecution,
 		CompletionEvent:    &HistoryEvent_WorkflowExecutionStarted,
+		StartedID:          EventID2,
 	}
 	HistoryRecordDecisionTaskStartedRequest = types.RecordDecisionTaskStartedRequest{
 		DomainUUID:        DomainID,

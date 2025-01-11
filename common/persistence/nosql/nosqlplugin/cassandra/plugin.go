@@ -21,7 +21,11 @@
 package cassandra
 
 import (
+	"fmt"
 	"time"
+
+	gogocql "github.com/gocql/gocql"
+	"github.com/hailocab/go-hostpool"
 
 	"github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/common/log"
@@ -66,7 +70,11 @@ func (p *plugin) CreateAdminDB(cfg *config.NoSQL, logger log.Logger, dc *persist
 }
 
 func (p *plugin) doCreateDB(cfg *config.NoSQL, logger log.Logger, dc *persistence.DynamicConfiguration) (*cdb, error) {
-	session, err := gocql.GetRegisteredClient().CreateSession(toGoCqlConfig(cfg))
+	gocqlConfig, err := toGoCqlConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	session, err := gocql.GetRegisteredClient().CreateSession(gocqlConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -74,16 +82,55 @@ func (p *plugin) doCreateDB(cfg *config.NoSQL, logger log.Logger, dc *persistenc
 	return db, nil
 }
 
-func toGoCqlConfig(cfg *config.NoSQL) gocql.ClusterConfig {
+func toGoCqlConfig(cfg *config.NoSQL) (gocql.ClusterConfig, error) {
+	var err error
 	if cfg.Port == 0 {
-		cfg.Port = environment.GetCassandraPort()
+		cfg.Port, err = environment.GetCassandraPort()
+		if err != nil {
+			return gocql.ClusterConfig{}, err
+		}
 	}
 	if cfg.Hosts == "" {
 		cfg.Hosts = environment.GetCassandraAddress()
 	}
 	if cfg.ProtoVersion == 0 {
-		cfg.ProtoVersion = environment.GetCassandraProtoVersion()
+		cfg.ProtoVersion, err = environment.GetCassandraProtoVersion()
+		if err != nil {
+			return gocql.ClusterConfig{}, err
+		}
 	}
+
+	if cfg.Timeout == 0 {
+		cfg.Timeout = defaultSessionTimeout
+	}
+
+	if cfg.ConnectTimeout == 0 {
+		cfg.ConnectTimeout = defaultConnectTimeout
+	}
+
+	if cfg.Consistency == "" {
+		cfg.Consistency = cassandraDefaultConsLevel.String()
+	}
+
+	if cfg.SerialConsistency == "" {
+		cfg.SerialConsistency = cassandraDefaultSerialConsLevel.String()
+	}
+
+	consistency, err := gocql.ParseConsistency(cfg.Consistency)
+	if err != nil {
+		return gocql.ClusterConfig{}, err
+	}
+
+	serialConsistency, err := gocql.ParseSerialConsistency(cfg.SerialConsistency)
+	if err != nil {
+		return gocql.ClusterConfig{}, err
+	}
+
+	hostSelection, err := toHostSelectionPolicy(cfg.HostSelectionPolicy)
+	if err != nil {
+		return gocql.ClusterConfig{}, err
+	}
+
 	return gocql.ClusterConfig{
 		Hosts:                 cfg.Hosts,
 		Port:                  cfg.Port,
@@ -96,9 +143,25 @@ func toGoCqlConfig(cfg *config.NoSQL) gocql.ClusterConfig {
 		MaxConns:              cfg.MaxConns,
 		TLS:                   cfg.TLS,
 		ProtoVersion:          cfg.ProtoVersion,
-		Consistency:           cassandraDefaultConsLevel,
-		SerialConsistency:     cassandraDefaultSerialConsLevel,
-		Timeout:               defaultSessionTimeout,
-		ConnectTimeout:        defaultConnectTimeout,
+		Consistency:           consistency,
+		SerialConsistency:     serialConsistency,
+		Timeout:               cfg.Timeout,
+		ConnectTimeout:        cfg.ConnectTimeout,
+		HostSelectionPolicy:   hostSelection,
+	}, nil
+}
+
+func toHostSelectionPolicy(policy string) (gogocql.HostSelectionPolicy, error) {
+	switch policy {
+	case "", "tokenaware,roundrobin":
+		return gogocql.TokenAwareHostPolicy(gogocql.RoundRobinHostPolicy()), nil
+	case "hostpool-epsilon-greedy":
+		return gogocql.HostPoolHostPolicy(
+			hostpool.NewEpsilonGreedy(nil, 0, &hostpool.LinearEpsilonValueCalculator{}),
+		), nil
+	case "roundrobin":
+		return gogocql.RoundRobinHostPolicy(), nil
+	default:
+		return nil, fmt.Errorf("unknown gocql host selection policy: %q", policy)
 	}
 }

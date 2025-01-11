@@ -51,7 +51,7 @@ type (
 func NewTransferStandbyTaskExecutor(
 	shard shard.Context,
 	archiverClient archiver.Client,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	historyResender ndc.HistoryResender,
 	logger log.Logger,
 	clusterName string,
@@ -117,6 +117,9 @@ func (t *transferStandbyTaskExecutor) Execute(
 		return errUnknownTransferTask
 	}
 }
+
+// Empty func for now
+func (t *transferStandbyTaskExecutor) Stop() {}
 
 func (t *transferStandbyTaskExecutor) processActivityTask(
 	ctx context.Context,
@@ -249,6 +252,7 @@ func (t *transferStandbyTaskExecutor) processCloseExecution(
 		workflowExecutionTimestamp := getWorkflowExecutionTimestamp(mutableState, startEvent)
 		visibilityMemo := getWorkflowMemo(executionInfo.Memo)
 		searchAttr := executionInfo.SearchAttributes
+		headers := getWorkflowHeaders(startEvent)
 		isCron := len(executionInfo.CronSchedule) > 0
 		updateTimestamp := t.shard.GetTimeSource().Now()
 
@@ -287,6 +291,7 @@ func (t *transferStandbyTaskExecutor) processCloseExecution(
 			numClusters,
 			updateTimestamp.UnixNano(),
 			searchAttr,
+			headers,
 		)
 	}
 
@@ -480,7 +485,6 @@ func (t *transferStandbyTaskExecutor) processRecordWorkflowStartedOrUpsertHelper
 	startTimestamp := startEvent.GetTimestamp()
 	executionTimestamp := getWorkflowExecutionTimestamp(mutableState, startEvent)
 	visibilityMemo := getWorkflowMemo(executionInfo.Memo)
-	searchAttr := copySearchAttributes(executionInfo.SearchAttributes)
 	isCron := len(executionInfo.CronSchedule) > 0
 	updateTimestamp := t.shard.GetTimeSource().Now()
 
@@ -489,6 +493,9 @@ func (t *transferStandbyTaskExecutor) processRecordWorkflowStartedOrUpsertHelper
 		return err
 	}
 	numClusters := (int16)(len(domainEntry.GetReplicationConfig().Clusters))
+
+	searchAttr := copySearchAttributes(executionInfo.SearchAttributes)
+	headers := getWorkflowHeaders(startEvent)
 
 	if isRecordStart {
 		workflowStartedScope.IncCounter(metrics.WorkflowStartedCount)
@@ -508,6 +515,7 @@ func (t *transferStandbyTaskExecutor) processRecordWorkflowStartedOrUpsertHelper
 			visibilityMemo,
 			updateTimestamp.UnixNano(),
 			searchAttr,
+			headers,
 		)
 	}
 	return t.upsertWorkflowExecution(
@@ -526,6 +534,7 @@ func (t *transferStandbyTaskExecutor) processRecordWorkflowStartedOrUpsertHelper
 		numClusters,
 		updateTimestamp.UnixNano(),
 		searchAttr,
+		headers,
 	)
 
 }

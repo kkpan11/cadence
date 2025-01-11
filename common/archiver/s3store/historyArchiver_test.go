@@ -36,11 +36,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/uber-go/tally"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/archiver"
@@ -657,8 +657,8 @@ func (s *historyArchiverSuite) TestArchiveAndGet() {
 }
 
 func (s *historyArchiverSuite) newTestHistoryArchiver(historyIterator archiver.HistoryIterator) *historyArchiver {
-	//config := &config.S3Archiver{}
-	//archiver, err := newHistoryArchiver(s.container, config, historyIterator)
+	// config := &config.S3Archiver{}
+	// archiver, err := newHistoryArchiver(s.container, config, historyIterator)
 	archiver := &historyArchiver{
 		container:       s.container,
 		s3cli:           s.s3cli,

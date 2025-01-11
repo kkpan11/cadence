@@ -28,6 +28,10 @@ import (
 	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/resource"
 	"github.com/uber/cadence/common/service"
+	"github.com/uber/cadence/service/matching/config"
+	"github.com/uber/cadence/service/matching/handler"
+	"github.com/uber/cadence/service/matching/wrappers/grpc"
+	"github.com/uber/cadence/service/matching/wrappers/thrift"
 )
 
 // Service represents the cadence-matching service
@@ -35,9 +39,9 @@ type Service struct {
 	resource.Resource
 
 	status  int32
-	handler Handler
+	handler handler.Handler
 	stopC   chan struct{}
-	config  *Config
+	config  *config.Config
 }
 
 // NewService builds a new cadence-matching service
@@ -45,22 +49,24 @@ func NewService(
 	params *resource.Params,
 ) (resource.Resource, error) {
 
-	serviceConfig := NewConfig(
+	serviceConfig := config.NewConfig(
 		dynamicconfig.NewCollection(
 			params.DynamicConfig,
 			params.Logger,
 			dynamicconfig.ClusterNameFilter(params.ClusterMetadata.GetCurrentClusterName()),
 		),
 		params.HostName,
+		params.GetIsolationGroups,
 	)
 
 	serviceResource, err := resource.New(
 		params,
 		service.Matching,
 		&service.Config{
-			PersistenceMaxQPS:       serviceConfig.PersistenceMaxQPS,
-			PersistenceGlobalMaxQPS: serviceConfig.PersistenceGlobalMaxQPS,
-			ThrottledLoggerMaxRPS:   serviceConfig.ThrottledLogRPS,
+			PersistenceMaxQPS:        serviceConfig.PersistenceMaxQPS,
+			PersistenceGlobalMaxQPS:  serviceConfig.PersistenceGlobalMaxQPS,
+			ThrottledLoggerMaxRPS:    serviceConfig.ThrottledLogRPS,
+			IsErrorRetryableFunction: common.IsServiceTransientError,
 			// matching doesn't need visibility config as it never read or write visibility
 		},
 	)
@@ -85,7 +91,7 @@ func (s *Service) Start() {
 	logger := s.GetLogger()
 	logger.Info("matching starting")
 
-	engine := NewEngine(
+	engine := handler.NewEngine(
 		s.GetTaskManager(),
 		s.GetClusterMetadata(),
 		s.GetHistoryClient(),
@@ -96,14 +102,15 @@ func (s *Service) Start() {
 		s.GetDomainCache(),
 		s.GetMembershipResolver(),
 		s.GetPartitioner(),
+		s.GetTimeSource(),
 	)
 
-	s.handler = NewHandler(engine, s.config, s.GetDomainCache(), s.GetMetricsClient(), s.GetLogger(), s.GetThrottledLogger())
+	s.handler = handler.NewHandler(engine, s.config, s.GetDomainCache(), s.GetMetricsClient(), s.GetLogger(), s.GetThrottledLogger())
 
-	thriftHandler := NewThriftHandler(s.handler)
+	thriftHandler := thrift.NewThriftHandler(s.handler)
 	thriftHandler.Register(s.GetDispatcher())
 
-	grpcHandler := NewGRPCHandler(s.handler)
+	grpcHandler := grpc.NewGRPCHandler(s.handler)
 	grpcHandler.Register(s.GetDispatcher())
 
 	// must start base service first

@@ -18,13 +18,29 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-//go:build pinotintegration
-// +build pinotintegration
+//go:build !race && pinotintegration
+// +build !race,pinotintegration
 
 // to run locally, make sure kafka and pinot is running,
 // then run cmd `go test -v ./host -run TestPinotIntegrationSuite -tags pinotintegration`
 // currently we have to manually add test table and delete the table for cleaning
 // waiting for the support to clean the data programmatically
+
+/*
+To run locally with docker containers:
+
+1. Stop the previous run if any
+
+	docker-compose -f docker/buildkite/docker-compose-local-pinot.yml down
+
+2. Build the integration-test-async-wf image
+
+	docker-compose -f docker/buildkite/docker-compose-local-pinot.yml build integration-test-cassandra-pinot
+
+3. Run the test in the docker container
+
+	docker-compose -f docker/buildkite/docker-compose-local-pinot.yml run --rm integration-test-cassandra-pinot
+*/
 
 package host
 
@@ -127,14 +143,17 @@ func (s *PinotIntegrationSuite) SetupSuite() {
 	// background only every domainCacheRefreshInterval period
 	time.Sleep(cache.DomainCacheRefreshInterval + time.Second)
 
-	tableName := "cadence_visibility_pinot" //cadence_visibility_pinot_integration_test
+	tableName := "cadence_visibility_pinot" // cadence_visibility_pinot_integration_test
 	pinotConfig := &config.PinotVisibilityConfig{
 		Cluster:     "",
 		Broker:      "localhost:8099",
 		Table:       tableName,
 		ServiceName: "",
+		Migration: config.VisibilityMigration{
+			Enabled: true,
+		},
 	}
-	s.pinotClient = pinotutils.CreatePinotClient(s.Suite, pinotConfig, s.Logger)
+	s.pinotClient = pinotutils.CreatePinotClient(&s.Suite, pinotConfig, s.Logger)
 }
 
 func (s *PinotIntegrationSuite) SetupTest() {
@@ -648,7 +667,7 @@ func (s *PinotIntegrationSuite) TestListWorkflow_OrderBy() {
 
 	time.Sleep(waitForPinotToSettle)
 
-	//desc := "desc"
+	// desc := "desc"
 	asc := "asc"
 	queryTemplate := `WorkflowType = "%s" order by %s %s`
 	pageSize := int32(defaultTestValueOfESIndexMaxResultWindow)
@@ -677,7 +696,7 @@ func (s *PinotIntegrationSuite) TestListWorkflow_OrderBy() {
 	// comment out things below, because json index column can't use order by
 
 	// greatest effort to reduce duplicate code
-	//testHelper := func(query, searchAttrKey string, prevVal, currVal interface{}) {
+	// testHelper := func(query, searchAttrKey string, prevVal, currVal interface{}) {
 	//	listRequest.Query = query
 	//	listRequest.NextPageToken = []byte{}
 	//	resp, err := s.engine.ListWorkflowExecutions(createContext(), listRequest)
@@ -721,32 +740,32 @@ func (s *PinotIntegrationSuite) TestListWorkflow_OrderBy() {
 	//	resp, err = s.engine.ListWorkflowExecutions(createContext(), listRequest) // last page
 	//	s.Nil(err)
 	//	s.Equal(1, len(resp.GetExecutions()))
-	//}
+	// }
 
 	//
-	//// order by CustomIntField desc
-	//field := definition.CustomIntField
-	//query := fmt.Sprintf(queryTemplate, wt, field, desc)
-	//var int1, int2 int
-	//testHelper(query, field, int1, int2)
+	// // order by CustomIntField desc
+	// field := definition.CustomIntField
+	// query := fmt.Sprintf(queryTemplate, wt, field, desc)
+	// var int1, int2 int
+	// testHelper(query, field, int1, int2)
 	//
-	//// order by CustomDoubleField desc
-	//field = definition.CustomDoubleField
-	//query = fmt.Sprintf(queryTemplate, wt, field, desc)
-	//var double1, double2 float64
-	//testHelper(query, field, double1, double2)
+	// // order by CustomDoubleField desc
+	// field = definition.CustomDoubleField
+	// query = fmt.Sprintf(queryTemplate, wt, field, desc)
+	// var double1, double2 float64
+	// testHelper(query, field, double1, double2)
 	//
-	//// order by CustomKeywordField desc
-	//field = definition.CustomKeywordField
-	//query = fmt.Sprintf(queryTemplate, wt, field, desc)
-	//var s1, s2 string
-	//testHelper(query, field, s1, s2)
+	// // order by CustomKeywordField desc
+	// field = definition.CustomKeywordField
+	// query = fmt.Sprintf(queryTemplate, wt, field, desc)
+	// var s1, s2 string
+	// testHelper(query, field, s1, s2)
 	//
-	//// order by CustomDatetimeField desc
-	//field = definition.CustomDatetimeField
-	//query = fmt.Sprintf(queryTemplate, wt, field, desc)
-	//var t1, t2 time.Time
-	//testHelper(query, field, t1, t2)
+	// // order by CustomDatetimeField desc
+	// field = definition.CustomDatetimeField
+	// query = fmt.Sprintf(queryTemplate, wt, field, desc)
+	// var t1, t2 time.Time
+	// testHelper(query, field, t1, t2)
 }
 
 func (s *PinotIntegrationSuite) testListWorkflowHelper(numOfWorkflows, pageSize int,
@@ -809,8 +828,8 @@ func (s *PinotIntegrationSuite) testListWorkflowHelper(numOfWorkflows, pageSize 
 		}
 		s.Nil(err)
 
-		//ans, _ := json.Marshal(resp.GetExecutions())
-		//panic(fmt.Sprintf("ABUCSDK: %s", ans))
+		// ans, _ := json.Marshal(resp.GetExecutions())
+		// panic(fmt.Sprintf("ABUCSDK: %s", ans))
 
 		if len(resp.GetExecutions()) == numOfWorkflows-pageSize {
 			inIf = true
@@ -1050,7 +1069,7 @@ func (s *PinotIntegrationSuite) TestUpsertWorkflowExecution() {
 	listRequest := &types.ListWorkflowExecutionsRequest{
 		Domain:   s.domainName,
 		PageSize: int32(2),
-		//Query:    fmt.Sprintf(`WorkflowType = '%s' and CloseTime = missing`, wt),
+		// Query:    fmt.Sprintf(`WorkflowType = '%s' and CloseTime = missing`, wt),
 		Query: fmt.Sprintf(`WorkflowType = '%s' and CloseTime = missing`, wt),
 	}
 	verified := false
@@ -1106,14 +1125,14 @@ func (s *PinotIntegrationSuite) testListResultForUpsertSearchAttributes(listRequ
 		resp, err := s.engine.ListWorkflowExecutions(ctx, listRequest)
 		s.Nil(err)
 
-		//res2B, _ := json.Marshal(resp.GetExecutions())
-		//panic(fmt.Sprintf("ABCDDDBUG: %s", listRequest.Query))
+		// res2B, _ := json.Marshal(resp.GetExecutions())
+		// panic(fmt.Sprintf("ABCDDDBUG: %s", listRequest.Query))
 
 		if len(resp.GetExecutions()) == 1 {
 			execution := resp.GetExecutions()[0]
 			retrievedSearchAttr := execution.SearchAttributes
 			if retrievedSearchAttr != nil && len(retrievedSearchAttr.GetIndexedFields()) == 3 {
-				//if retrievedSearchAttr != nil && len(retrievedSearchAttr.GetIndexedFields()) > 0 {
+				// if retrievedSearchAttr != nil && len(retrievedSearchAttr.GetIndexedFields()) > 0 {
 				fields := retrievedSearchAttr.GetIndexedFields()
 				searchValBytes := fields[s.testSearchAttributeKey]
 				var searchVal string

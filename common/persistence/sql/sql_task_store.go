@@ -190,17 +190,53 @@ func (m *sqlTaskStore) LeaseTaskList(
 			return fmt.Errorf("%v rows affected instead of 1", rowsAffected)
 		}
 		resp = &persistence.LeaseTaskListResponse{TaskListInfo: &persistence.TaskListInfo{
-			DomainID:    request.DomainID,
-			Name:        request.TaskList,
-			TaskType:    request.TaskType,
-			RangeID:     rangeID + 1,
-			AckLevel:    ackLevel,
-			Kind:        request.TaskListKind,
-			LastUpdated: now,
+			DomainID:                request.DomainID,
+			Name:                    request.TaskList,
+			TaskType:                request.TaskType,
+			RangeID:                 rangeID + 1,
+			AckLevel:                ackLevel,
+			Kind:                    request.TaskListKind,
+			LastUpdated:             now,
+			AdaptivePartitionConfig: fromSerializationTaskListPartitionConfig(tlInfo.AdaptivePartitionConfig),
 		}}
 		return nil
 	})
 	return resp, err
+}
+
+func (m *sqlTaskStore) GetTaskList(
+	ctx context.Context,
+	request *persistence.GetTaskListRequest,
+) (*persistence.GetTaskListResponse, error) {
+	dbShardID := sqlplugin.GetDBShardIDFromDomainIDAndTasklist(request.DomainID, request.TaskList, m.db.GetTotalNumDBShards())
+
+	domainID := serialization.MustParseUUID(request.DomainID)
+	rows, err := m.db.SelectFromTaskLists(ctx, &sqlplugin.TaskListsFilter{
+		ShardID:  dbShardID,
+		DomainID: &domainID,
+		Name:     &request.TaskList,
+		TaskType: common.Int64Ptr(int64(request.TaskType))})
+	if err != nil {
+		return nil, convertCommonErrors(m.db, "GetTaskList", "", err)
+	}
+	row := rows[0]
+	tlInfo, err := m.parser.TaskListInfoFromBlob(row.Data, row.DataEncoding)
+	if err != nil {
+		return nil, err
+	}
+	return &persistence.GetTaskListResponse{
+		TaskListInfo: &persistence.TaskListInfo{
+			DomainID:                request.DomainID,
+			Name:                    request.TaskList,
+			TaskType:                request.TaskType,
+			RangeID:                 row.RangeID,
+			AckLevel:                tlInfo.AckLevel,
+			Kind:                    int(tlInfo.Kind),
+			Expiry:                  tlInfo.ExpiryTimestamp,
+			LastUpdated:             tlInfo.LastUpdated,
+			AdaptivePartitionConfig: fromSerializationTaskListPartitionConfig(tlInfo.AdaptivePartitionConfig),
+		},
+	}, nil
 }
 
 func (m *sqlTaskStore) UpdateTaskList(
@@ -210,10 +246,11 @@ func (m *sqlTaskStore) UpdateTaskList(
 	dbShardID := sqlplugin.GetDBShardIDFromDomainIDAndTasklist(request.TaskListInfo.DomainID, request.TaskListInfo.Name, m.db.GetTotalNumDBShards())
 	domainID := serialization.MustParseUUID(request.TaskListInfo.DomainID)
 	tlInfo := &serialization.TaskListInfo{
-		AckLevel:        request.TaskListInfo.AckLevel,
-		Kind:            int16(request.TaskListInfo.Kind),
-		ExpiryTimestamp: time.Unix(0, 0),
-		LastUpdated:     time.Now(),
+		AckLevel:                request.TaskListInfo.AckLevel,
+		Kind:                    int16(request.TaskListInfo.Kind),
+		ExpiryTimestamp:         time.Unix(0, 0),
+		LastUpdated:             time.Now(),
+		AdaptivePartitionConfig: toSerializationTaskListPartitionConfig(request.TaskListInfo.AdaptivePartitionConfig),
 	}
 	if request.TaskListInfo.Kind == persistence.TaskListKindSticky {
 		tlInfo.ExpiryTimestamp = stickyTaskListExpiry()
@@ -373,7 +410,7 @@ func (m *sqlTaskStore) DeleteTaskList(
 
 func (m *sqlTaskStore) CreateTasks(
 	ctx context.Context,
-	request *persistence.InternalCreateTasksRequest,
+	request *persistence.CreateTasksRequest,
 ) (*persistence.CreateTasksResponse, error) {
 	var tasksRows []sqlplugin.TasksRow
 	var tasksRowsWithTTL []sqlplugin.TasksRowWithTTL
@@ -388,8 +425,8 @@ func (m *sqlTaskStore) CreateTasks(
 	for i, v := range request.Tasks {
 		var expiryTime time.Time
 		var ttl time.Duration
-		if v.Data.ScheduleToStartTimeout.Seconds() > 0 {
-			ttl = v.Data.ScheduleToStartTimeout
+		if v.Data.ScheduleToStartTimeoutSeconds > 0 {
+			ttl = time.Duration(v.Data.ScheduleToStartTimeoutSeconds) * time.Second
 			if m.db.SupportsTTL() {
 				maxAllowedTTL, err := m.db.MaxAllowedTTL()
 				if err != nil {
@@ -465,7 +502,7 @@ func (m *sqlTaskStore) CreateTasks(
 func (m *sqlTaskStore) GetTasks(
 	ctx context.Context,
 	request *persistence.GetTasksRequest,
-) (*persistence.InternalGetTasksResponse, error) {
+) (*persistence.GetTasksResponse, error) {
 	shardID := sqlplugin.GetDBShardIDFromDomainIDAndTasklist(request.DomainID, request.TaskList, m.db.GetTotalNumDBShards())
 	rows, err := m.db.SelectFromTasks(ctx, &sqlplugin.TasksFilter{
 		ShardID:      shardID,
@@ -480,13 +517,13 @@ func (m *sqlTaskStore) GetTasks(
 		return nil, convertCommonErrors(m.db, "GetTasks", "", err)
 	}
 
-	var tasks = make([]*persistence.InternalTaskInfo, len(rows))
+	var tasks = make([]*persistence.TaskInfo, len(rows))
 	for i, v := range rows {
 		info, err := m.parser.TaskInfoFromBlob(v.Data, v.DataEncoding)
 		if err != nil {
 			return nil, err
 		}
-		tasks[i] = &persistence.InternalTaskInfo{
+		tasks[i] = &persistence.TaskInfo{
 			DomainID:        request.DomainID,
 			WorkflowID:      info.GetWorkflowID(),
 			RunID:           info.RunID.String(),
@@ -498,7 +535,7 @@ func (m *sqlTaskStore) GetTasks(
 		}
 	}
 
-	return &persistence.InternalGetTasksResponse{Tasks: tasks}, nil
+	return &persistence.GetTasksResponse{Tasks: tasks}, nil
 }
 
 func (m *sqlTaskStore) CompleteTask(
@@ -592,4 +629,70 @@ func lockTaskList(ctx context.Context, tx sqlplugin.Tx, shardID int, domainID se
 
 func stickyTaskListExpiry() time.Time {
 	return time.Now().Add(stickyTasksListsTTL)
+}
+
+func toSerializationTaskListPartitionConfig(c *persistence.TaskListPartitionConfig) *serialization.TaskListPartitionConfig {
+	if c == nil {
+		return nil
+	}
+	return &serialization.TaskListPartitionConfig{
+		Version:            c.Version,
+		NumReadPartitions:  int32(len(c.ReadPartitions)),
+		NumWritePartitions: int32(len(c.WritePartitions)),
+		ReadPartitions:     toSerializationTaskListPartitionMap(c.ReadPartitions),
+		WritePartitions:    toSerializationTaskListPartitionMap(c.WritePartitions),
+	}
+}
+
+func toSerializationTaskListPartitionMap(m map[int]*persistence.TaskListPartition) map[int32]*serialization.TaskListPartition {
+	if m == nil {
+		return nil
+	}
+	result := make(map[int32]*serialization.TaskListPartition, len(m))
+	for id, p := range m {
+		result[int32(id)] = &serialization.TaskListPartition{IsolationGroups: p.IsolationGroups}
+	}
+	return result
+}
+
+func fromSerializationTaskListPartitionConfig(c *serialization.TaskListPartitionConfig) *persistence.TaskListPartitionConfig {
+	if c == nil {
+		return nil
+	}
+	var read map[int]*persistence.TaskListPartition
+	if int32(len(c.ReadPartitions)) == c.NumReadPartitions {
+		read = fromSerializationTaskListPartitionMap(c.ReadPartitions)
+	} else {
+		read = createDefaultPartitions(c.NumReadPartitions)
+	}
+	var write map[int]*persistence.TaskListPartition
+	if int32(len(c.WritePartitions)) == c.NumWritePartitions {
+		write = fromSerializationTaskListPartitionMap(c.WritePartitions)
+	} else {
+		write = createDefaultPartitions(c.NumWritePartitions)
+	}
+	return &persistence.TaskListPartitionConfig{
+		Version:         c.Version,
+		ReadPartitions:  read,
+		WritePartitions: write,
+	}
+}
+
+func createDefaultPartitions(len int32) map[int]*persistence.TaskListPartition {
+	partitions := make(map[int]*persistence.TaskListPartition, len)
+	for i := 0; i < int(len); i++ {
+		partitions[i] = &persistence.TaskListPartition{}
+	}
+	return partitions
+}
+
+func fromSerializationTaskListPartitionMap(m map[int32]*serialization.TaskListPartition) map[int]*persistence.TaskListPartition {
+	if m == nil {
+		return nil
+	}
+	result := make(map[int]*persistence.TaskListPartition, len(m))
+	for id, p := range m {
+		result[int(id)] = &persistence.TaskListPartition{IsolationGroups: p.IsolationGroups}
+	}
+	return result
 }

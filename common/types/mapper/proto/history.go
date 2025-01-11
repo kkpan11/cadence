@@ -297,6 +297,7 @@ func FromHistoryGetMutableStateRequest(t *types.GetMutableStateRequest) *history
 		WorkflowExecution:   FromWorkflowExecution(t.Execution),
 		ExpectedNextEventId: t.ExpectedNextEventID,
 		CurrentBranchToken:  t.CurrentBranchToken,
+		VersionHistoryItem:  FromVersionHistoryItem(t.VersionHistoryItem),
 	}
 }
 
@@ -309,6 +310,7 @@ func ToHistoryGetMutableStateRequest(t *historyv1.GetMutableStateRequest) *types
 		Execution:           ToWorkflowExecution(t.WorkflowExecution),
 		ExpectedNextEventID: t.ExpectedNextEventId,
 		CurrentBranchToken:  t.CurrentBranchToken,
+		VersionHistoryItem:  ToVersionHistoryItem(t.VersionHistoryItem),
 	}
 }
 
@@ -833,6 +835,7 @@ func FromHistoryRecordChildExecutionCompletedRequest(t *types.RecordChildExecuti
 		InitiatedId:        t.InitiatedID,
 		CompletedExecution: FromWorkflowExecution(t.CompletedExecution),
 		CompletionEvent:    FromHistoryEvent(t.CompletionEvent),
+		StartedId:          t.StartedID,
 	}
 }
 
@@ -846,6 +849,7 @@ func ToHistoryRecordChildExecutionCompletedRequest(t *historyv1.RecordChildExecu
 		InitiatedID:        t.InitiatedId,
 		CompletedExecution: ToWorkflowExecution(t.CompletedExecution),
 		CompletionEvent:    ToHistoryEvent(t.CompletionEvent),
+		StartedID:          t.StartedId,
 	}
 }
 
@@ -1582,4 +1586,39 @@ func ToHistoryResetStickyTaskListResponse(t *historyv1.ResetStickyTaskListRespon
 		return nil
 	}
 	return &types.HistoryResetStickyTaskListResponse{}
+}
+
+func FromHistoryRatelimitUpdateRequest(t *types.RatelimitUpdateRequest) *historyv1.RatelimitUpdateRequest {
+	if t == nil {
+		return nil
+	}
+	return &historyv1.RatelimitUpdateRequest{
+		Data: FromAny(t.Any),
+	}
+}
+func ToHistoryRatelimitUpdateRequest(t *historyv1.RatelimitUpdateRequest) *types.RatelimitUpdateRequest {
+	if t == nil {
+		return nil
+	}
+	return &types.RatelimitUpdateRequest{
+		Any: ToAny(t.Data),
+	}
+}
+
+func FromHistoryRatelimitUpdateResponse(t *types.RatelimitUpdateResponse) *historyv1.RatelimitUpdateResponse {
+	if t == nil {
+		return nil
+	}
+	return &historyv1.RatelimitUpdateResponse{
+		Data: FromAny(t.Any),
+	}
+}
+
+func ToHistoryRatelimitUpdateResponse(t *historyv1.RatelimitUpdateResponse) *types.RatelimitUpdateResponse {
+	if t == nil {
+		return nil
+	}
+	return &types.RatelimitUpdateResponse{
+		Any: ToAny(t.Data),
+	}
 }

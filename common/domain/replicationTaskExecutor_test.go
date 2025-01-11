@@ -1,4 +1,4 @@
-// Copyright (c) 2017 Uber Technologies, Inc.
+// Copyright (c) 2024 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,843 +22,648 @@ package domain
 
 import (
 	"context"
-	"log"
-	"os"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/pborman/uuid"
-	"github.com/stretchr/testify/suite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
-	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/clock"
+	"github.com/uber/cadence/common/log"
+	"github.com/uber/cadence/common/log/testlogger"
 	"github.com/uber/cadence/common/persistence"
-	"github.com/uber/cadence/common/persistence/nosql/nosqlplugin/cassandra/gocql/public"
-	persistencetests "github.com/uber/cadence/common/persistence/persistence-tests"
 	"github.com/uber/cadence/common/types"
-	"github.com/uber/cadence/testflags"
 )
 
-type (
-	domainReplicationTaskExecutorSuite struct {
-		*persistencetests.TestBase
-		domainReplicator *domainReplicationTaskExecutorImpl
+func TestDomainReplicationTaskExecutor_Execute(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupMock func(mockDomainManager persistence.MockDomainManager)
+		task      *types.DomainTaskAttributes
+		wantErr   bool
+		errType   interface{}
+	}{
+		{
+			name: "Validate Domain Task - Empty Task",
+			setupMock: func(mockDomainManager persistence.MockDomainManager) {
+				// No setup required as the task itself is nil, triggering the validation error
+			},
+			task:    nil,
+			wantErr: true,
+			errType: &types.BadRequestError{},
+		},
+		{
+			name: "Handle Create Domain Task - Valid",
+			setupMock: func(mockDomainManager persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.CreateDomainResponse{ID: "validDomainID"}, nil).
+					Times(1)
+			},
+			task: &types.DomainTaskAttributes{
+				DomainOperation: types.DomainOperationCreate.Ptr(),
+				ID:              "validDomainID",
+				Info: &types.DomainInfo{
+					Name:        "validDomain",
+					Status:      types.DomainStatusRegistered.Ptr(),
+					Description: "A valid domain",
+					OwnerEmail:  "owner@example.com",
+					Data:        map[string]string{"k1": "v1"},
+				},
+				Config: &types.DomainConfiguration{
+					WorkflowExecutionRetentionPeriodInDays: 7,
+					EmitMetric:                             true,
+					HistoryArchivalStatus:                  types.ArchivalStatusEnabled.Ptr(),
+					HistoryArchivalURI:                     "test://history",
+					VisibilityArchivalStatus:               types.ArchivalStatusEnabled.Ptr(),
+					VisibilityArchivalURI:                  "test://visibility",
+				},
+				ReplicationConfig: &types.DomainReplicationConfiguration{
+					ActiveClusterName: "activeClusterName",
+					Clusters: []*types.ClusterReplicationConfiguration{
+						{ClusterName: "activeClusterName"},
+						{ClusterName: "standbyClusterName"},
+					},
+				},
+				ConfigVersion:   1,
+				FailoverVersion: 1,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Handle Create Domain Task - Name UUID Collision",
+			setupMock: func(mockDomainManager persistence.MockDomainManager) {
+				// call to GetDomain simulates a name collision by returning a different domain ID
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), &persistence.GetDomainRequest{Name: "collisionDomain"}).
+					Return(&persistence.GetDomainResponse{Info: &persistence.DomainInfo{ID: uuid.New()}}, nil).
+					Times(1)
+
+				// Expect CreateDomain to be called, which should result in a collision error
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, ErrNameUUIDCollision).
+					Times(1)
+			},
+			task: &types.DomainTaskAttributes{
+				DomainOperation: types.DomainOperationCreate.Ptr(),
+				ID:              uuid.New(),
+				Info: &types.DomainInfo{
+					Name:        "collisionDomain",
+					Status:      types.DomainStatusRegistered.Ptr(),
+					Description: "A domain with UUID collision",
+					OwnerEmail:  "owner@example.com",
+					Data:        map[string]string{"k1": "v1"},
+				},
+				Config: &types.DomainConfiguration{
+					WorkflowExecutionRetentionPeriodInDays: 7,
+					EmitMetric:                             true,
+					HistoryArchivalStatus:                  types.ArchivalStatusEnabled.Ptr(),
+					HistoryArchivalURI:                     "test://history",
+					VisibilityArchivalStatus:               types.ArchivalStatusEnabled.Ptr(),
+					VisibilityArchivalURI:                  "test://visibility",
+				},
+				ReplicationConfig: &types.DomainReplicationConfiguration{
+					ActiveClusterName: "activeClusterName",
+					Clusters: []*types.ClusterReplicationConfiguration{
+						{ClusterName: "activeClusterName"},
+						{ClusterName: "standbyClusterName"},
+					},
+				},
+				ConfigVersion:   1,
+				FailoverVersion: 1,
+			},
+			wantErr: true,
+			errType: &types.BadRequestError{},
+		},
+		{
+			name: "Handle Update Domain Task - Valid Update",
+			setupMock: func(mockDomainManager persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetMetadata(gomock.Any()).
+					Return(&persistence.GetMetadataResponse{NotificationVersion: 123}, nil).
+					Times(1)
+
+				// Mock GetDomain to simulate domain fetch before update
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.GetDomainResponse{
+						Info:              &persistence.DomainInfo{ID: "existingDomainID", Name: "existingDomainName"},
+						Config:            &persistence.DomainConfig{},
+						ReplicationConfig: &persistence.DomainReplicationConfig{},
+					}, nil).AnyTimes()
+
+				// Mock UpdateDomain to simulate a successful domain update
+				mockDomainManager.EXPECT().
+					UpdateDomain(gomock.Any(), gomock.Any()).
+					Return(nil).Times(1)
+			},
+			task: &types.DomainTaskAttributes{
+				DomainOperation: types.DomainOperationUpdate.Ptr(),
+				ID:              "existingDomainID",
+				Info: &types.DomainInfo{
+					Name:        "existingDomainName",
+					Status:      types.DomainStatusRegistered.Ptr(),
+					Description: "Updated description",
+					OwnerEmail:  "updatedOwner@example.com",
+					Data:        map[string]string{"updatedKey": "updatedValue"},
+				},
+				Config:            &types.DomainConfiguration{},
+				ReplicationConfig: &types.DomainReplicationConfiguration{},
+				ConfigVersion:     2,
+				FailoverVersion:   100,
+			},
+			wantErr: false,
+		},
+		{
+			name: "Handle Invalid Domain Operation",
+			setupMock: func(mockDomainManager persistence.MockDomainManager) {
+				// No mock setup is required as the operation should not proceed to any database calls
+			},
+			task: &types.DomainTaskAttributes{
+				// Set up a task without a valid DomainOperation or with an unrecognized operation
+				DomainOperation: nil, // Assuming this would not match any specific case
+				ID:              "invalidOperationDomainID",
+				Info: &types.DomainInfo{
+					Name:        "invalidOperationDomain",
+					Status:      types.DomainStatusRegistered.Ptr(),
+					Description: "Domain with invalid operation",
+					OwnerEmail:  "owner@example.com",
+					Data:        map[string]string{"k1": "v1"},
+				},
+				Config:            &types.DomainConfiguration{},
+				ReplicationConfig: &types.DomainReplicationConfiguration{},
+			},
+			wantErr: true,
+			errType: &types.BadRequestError{},
+		},
+		{
+			name: "Handle Unsupported Domain Operation",
+			setupMock: func(mockDomainManager persistence.MockDomainManager) {
+				// No mock setup is needed as the operation should immediately return an error
+			},
+			task: &types.DomainTaskAttributes{
+				DomainOperation: types.DomainOperation(999).Ptr(), // Assuming 999 is not a valid operation
+				ID:              "someDomainID",
+				Info: &types.DomainInfo{
+					Name:        "someDomain",
+					Status:      types.DomainStatusRegistered.Ptr(),
+					Description: "A domain with an unsupported operation",
+					OwnerEmail:  "email@example.com",
+					Data:        map[string]string{"key": "value"},
+				},
+				Config: &types.DomainConfiguration{
+					WorkflowExecutionRetentionPeriodInDays: 7,
+					EmitMetric:                             true,
+					HistoryArchivalStatus:                  types.ArchivalStatusEnabled.Ptr(),
+					HistoryArchivalURI:                     "uri://history",
+					VisibilityArchivalStatus:               types.ArchivalStatusEnabled.Ptr(),
+					VisibilityArchivalURI:                  "uri://visibility",
+				},
+				ReplicationConfig: &types.DomainReplicationConfiguration{
+					ActiveClusterName: "activeCluster",
+					Clusters:          []*types.ClusterReplicationConfiguration{{ClusterName: "activeCluster"}},
+				},
+			},
+			wantErr: true,
+			errType: &types.BadRequestError{},
+		},
 	}
-)
 
-func TestDomainReplicationTaskExecutorSuite(t *testing.T) {
-	testflags.RequireCassandra(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockDomainManager := persistence.NewMockDomainManager(ctrl)
+			mockTimeSource := clock.NewRealTimeSource()
+			mockLogger := log.NewNoop()
 
-	if testing.Verbose() {
-		log.SetOutput(os.Stdout)
+			executor := NewReplicationTaskExecutor(mockDomainManager, mockTimeSource, mockLogger).(*domainReplicationTaskExecutorImpl)
+			tt.setupMock(*mockDomainManager)
+			err := executor.Execute(tt.task)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.IsType(t, tt.errType, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
-
-	s := new(domainReplicationTaskExecutorSuite)
-
-	s.TestBase = public.NewTestBaseWithPublicCassandra(t, &persistencetests.TestBaseOptions{})
-
-	suite.Run(t, s)
 }
 
-func (s *domainReplicationTaskExecutorSuite) SetupTest() {
-	s.Setup()
-
-	s.domainReplicator = NewReplicationTaskExecutor(
-		s.DomainManager,
-		clock.NewRealTimeSource(),
-		s.Logger,
-	).(*domainReplicationTaskExecutorImpl)
+func domainCreationTask() *types.DomainTaskAttributes {
+	return &types.DomainTaskAttributes{
+		DomainOperation: types.DomainOperationCreate.Ptr(),
+		ID:              "testDomainID",
+		Info: &types.DomainInfo{
+			Name:        "testDomain",
+			Status:      types.DomainStatusRegistered.Ptr(),
+			Description: "This is a test domain",
+			OwnerEmail:  "owner@test.com",
+			Data:        map[string]string{"key1": "value1"}, // Arbitrary domain metadata
+		},
+		Config: &types.DomainConfiguration{
+			WorkflowExecutionRetentionPeriodInDays: 10,
+			EmitMetric:                             true,
+			HistoryArchivalStatus:                  types.ArchivalStatusEnabled.Ptr(),
+			HistoryArchivalURI:                     "test://history/archival",
+			VisibilityArchivalStatus:               types.ArchivalStatusEnabled.Ptr(),
+			VisibilityArchivalURI:                  "test://visibility/archival",
+		},
+		ReplicationConfig: &types.DomainReplicationConfiguration{
+			ActiveClusterName: "activeClusterName",
+			Clusters: []*types.ClusterReplicationConfiguration{
+				{
+					ClusterName: "activeClusterName",
+				},
+				{
+					ClusterName: "standbyClusterName",
+				},
+			},
+		},
+		ConfigVersion:           1,
+		FailoverVersion:         1,
+		PreviousFailoverVersion: 0,
+	}
 }
 
-func (s *domainReplicationTaskExecutorSuite) TearDownTest() {
-	s.TearDownWorkflowStore()
+func TestHandleDomainCreationReplicationTask(t *testing.T) {
+	tests := []struct {
+		name      string
+		task      *types.DomainTaskAttributes
+		setup     func(mockDomainManager *persistence.MockDomainManager)
+		wantError bool
+	}{
+		{
+			name: "Successful Domain Creation",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.CreateDomainResponse{ID: "testDomainID"}, nil)
+			},
+			wantError: false,
+		},
+		{
+			name: "Generic Error During Domain Creation",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, types.InternalServiceError{Message: "an internal error"}).
+					Times(1)
+
+				// Since CreateDomain failed, handleDomainCreationReplicationTask check for domain existence by name and ID
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, &types.EntityNotExistsError{}). // Simulate that no domain exists with the given name/ID
+					AnyTimes()
+			},
+			wantError: true,
+		},
+		{
+			name: "Handle Name/UUID Collision - EntityNotExistsError",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, ErrNameUUIDCollision).Times(1)
+
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).Return(nil, &types.EntityNotExistsError{}).AnyTimes()
+			},
+			wantError: true,
+		},
+		{
+			name: "Immediate Error Return from CreateDomain",
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, types.InternalServiceError{Message: "internal error"}).
+					Times(1)
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, ErrInvalidDomainStatus).
+					AnyTimes()
+			},
+			task:      domainCreationTask(),
+			wantError: true,
+		},
+		{
+			name: "Domain Creation with Nil Status",
+			task: &types.DomainTaskAttributes{
+				DomainOperation: types.DomainOperationCreate.Ptr(),
+				ID:              "testDomainID",
+				Info: &types.DomainInfo{
+					Name: "testDomain",
+					// Status is intentionally left as nil to trigger the error
+				},
+			},
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				// No need to set up a mock for CreateDomain as the call should not reach this point
+			},
+			wantError: true,
+		},
+		{
+			name: "Domain Creation with Unrecognized Status",
+			task: &types.DomainTaskAttributes{
+				DomainOperation: types.DomainOperationCreate.Ptr(),
+				ID:              "testDomainID",
+				Info: &types.DomainInfo{
+					Name:   "testDomain",
+					Status: types.DomainStatus(999).Ptr(), // Assuming 999 is an unrecognized status
+				},
+			},
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				// As before, no need for mock setup for CreateDomain
+			},
+			wantError: true,
+		},
+		{
+			name: "Unexpected Error Type from GetDomain Leads to Default Error Handling",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, ErrInvalidDomainStatus).Times(1)
+
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("unexpected error")).Times(1)
+			},
+			wantError: true,
+		},
+		{
+			name: "Successful GetDomain with Name/UUID Mismatch",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, ErrNameUUIDCollision).AnyTimes()
+
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.GetDomainResponse{
+						Info: &persistence.DomainInfo{ID: "testDomainID", Name: "mismatchName"},
+					}, nil).AnyTimes()
+			},
+			wantError: true,
+		},
+		{
+			name: "Handle Domain Creation with Unhandled Error",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, &types.EntityNotExistsError{}).
+					AnyTimes()
+
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("unhandled error")).
+					Times(1)
+			},
+			wantError: true,
+		},
+		{
+			name: "Handle Domain Creation - Unexpected Error from GetDomain",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("test error")).Times(1)
+
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, &types.EntityNotExistsError{}).Times(1)
+
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("unexpected error")).Times(1)
+			},
+			wantError: true,
+		},
+		{
+			name: "Duplicate Domain Creation With Same ID and Name",
+			task: domainCreationTask(),
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), gomock.Any()).
+					Return(nil, ErrNameUUIDCollision).Times(1)
+
+				// Setup GetDomain to return matching ID and Name, indicating no actual conflict
+				// This setup ensures that recordExists becomes true
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.GetDomainResponse{
+						Info: &persistence.DomainInfo{ID: "testDomainID", Name: "testDomain"},
+					}, nil).Times(2)
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+
+			mockDomainManager := persistence.NewMockDomainManager(ctrl)
+			mockLogger := testlogger.New(t)
+			mockTimeSource := clock.NewMockedTimeSourceAt(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)) // Fixed time
+
+			executor := &domainReplicationTaskExecutorImpl{
+				domainManager: mockDomainManager,
+				logger:        mockLogger,
+				timeSource:    mockTimeSource,
+			}
+
+			tt.setup(mockDomainManager)
+			err := executor.handleDomainCreationReplicationTask(context.Background(), tt.task)
+			if tt.wantError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
-func (s *domainReplicationTaskExecutorSuite) TestExecute_RegisterDomainTask_NameUUIDCollision() {
-	operation := types.DomainOperationCreate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	data := map[string]string{"k": "v"}
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusEnabled
-	historyArchivalURI := "some random history archival uri"
-	visibilityArchivalStatus := types.ArchivalStatusEnabled
-	visibilityArchivalURI := "some random visibility archival uri"
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(0)
-	failoverVersion := int64(59)
-	clusters := []*types.ClusterReplicationConfiguration{
+func TestHandleDomainUpdateReplicationTask(t *testing.T) {
+	tests := []struct {
+		name    string
+		task    *types.DomainTaskAttributes
+		wantErr bool
+		setup   func(mockDomainManager *persistence.MockDomainManager)
+	}{
 		{
-			ClusterName: clusterActive,
+			name: "Convert Status Error",
+			task: &types.DomainTaskAttributes{
+				Info: &types.DomainInfo{
+					Status: func() *types.DomainStatus { var ds types.DomainStatus = 999; return &ds }(), // Invalid status to trigger conversion error
+				},
+			},
+			wantErr: true,
+			setup:   func(dm *persistence.MockDomainManager) {},
 		},
 		{
-			ClusterName: clusterStandby,
-		},
-	}
-
-	task := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        data,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:   configVersion,
-		FailoverVersion: failoverVersion,
-	}
-
-	err := s.domainReplicator.Execute(task)
-	s.Nil(err)
-
-	task.ID = uuid.New()
-	task.Info.Name = name
-	err = s.domainReplicator.Execute(task)
-	s.NotNil(err)
-	s.IsType(&types.BadRequestError{}, err)
-
-	task.ID = id
-	task.Info.Name = "other random domain test name"
-	err = s.domainReplicator.Execute(task)
-	s.NotNil(err)
-	s.IsType(&types.BadRequestError{}, err)
-}
-
-func (s *domainReplicationTaskExecutorSuite) TestExecute_RegisterDomainTask() {
-	operation := types.DomainOperationCreate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	data := map[string]string{"k": "v"}
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusEnabled
-	historyArchivalURI := "some random history archival uri"
-	visibilityArchivalStatus := types.ArchivalStatusEnabled
-	visibilityArchivalURI := "some random visibility archival uri"
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(0)
-	failoverVersion := int64(59)
-	clusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: clusterActive,
+			name:    "Error Fetching Metadata",
+			task:    domainCreationTask(),
+			wantErr: true,
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetMetadata(gomock.Any()).
+					Return(nil, errors.New("Error getting metadata while handling replication task")).
+					AnyTimes()
+			},
 		},
 		{
-			ClusterName: clusterStandby,
-		},
-	}
+			name: "GetDomain Returns General Error",
+			task: &types.DomainTaskAttributes{
+				Info: &types.DomainInfo{
+					Name: "someDomain",
+				},
+			},
+			wantErr: true,
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("general error")).AnyTimes()
 
-	task := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        data,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:   configVersion,
-		FailoverVersion: failoverVersion,
-	}
+				mockDomainManager.EXPECT().
+					GetMetadata(gomock.Any()).
+					Return(&persistence.GetMetadataResponse{}, nil).AnyTimes()
 
-	metadata, err := s.DomainManager.GetMetadata(context.Background())
-	s.Nil(err)
-	notificationVersion := metadata.NotificationVersion
-	err = s.domainReplicator.Execute(task)
-	s.Nil(err)
-
-	resp, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{ID: id})
-	s.Nil(err)
-	s.NotNil(resp)
-	s.Equal(id, resp.Info.ID)
-	s.Equal(name, resp.Info.Name)
-	s.Equal(persistence.DomainStatusRegistered, resp.Info.Status)
-	s.Equal(description, resp.Info.Description)
-	s.Equal(ownerEmail, resp.Info.OwnerEmail)
-	s.Equal(data, resp.Info.Data)
-	s.Equal(retention, resp.Config.Retention)
-	s.Equal(emitMetric, resp.Config.EmitMetric)
-	s.Equal(historyArchivalStatus, resp.Config.HistoryArchivalStatus)
-	s.Equal(historyArchivalURI, resp.Config.HistoryArchivalURI)
-	s.Equal(visibilityArchivalStatus, resp.Config.VisibilityArchivalStatus)
-	s.Equal(visibilityArchivalURI, resp.Config.VisibilityArchivalURI)
-	s.Equal(clusterActive, resp.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(clusters), resp.ReplicationConfig.Clusters)
-	s.Equal(configVersion, resp.ConfigVersion)
-	s.Equal(failoverVersion, resp.FailoverVersion)
-	s.Equal(int64(0), resp.FailoverNotificationVersion)
-	s.Equal(notificationVersion, resp.NotificationVersion)
-
-	// handle duplicated task
-	err = s.domainReplicator.Execute(task)
-	s.Nil(err)
-}
-
-func (s *domainReplicationTaskExecutorSuite) TestExecute_UpdateDomainTask_DomainNotExist() {
-	operation := types.DomainOperationUpdate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusEnabled
-	historyArchivalURI := "some random history archival uri"
-	visibilityArchivalStatus := types.ArchivalStatusEnabled
-	visibilityArchivalURI := "some random visibility archival uri"
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(12)
-	failoverVersion := int64(59)
-	domainData := map[string]string{"k1": "v1", "k2": "v2"}
-	clusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: clusterActive,
+			},
 		},
 		{
-			ClusterName: clusterStandby,
-		},
-	}
+			name: "GetDomain Returns EntityNotExistsError - Triggers Domain Creation",
+			task: &types.DomainTaskAttributes{
+				Info: &types.DomainInfo{
+					Name: "nonexistentDomain",
+				},
+			},
+			wantErr: true,
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), &persistence.GetDomainRequest{
+						Name: "nonexistentDomain",
+					}).
+					Return(nil, &types.EntityNotExistsError{}).AnyTimes()
 
-	updateTask := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        domainData,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:   configVersion,
-		FailoverVersion: failoverVersion,
-	}
+				mockDomainManager.EXPECT().
+					GetMetadata(gomock.Any()).
+					Return(&persistence.GetMetadataResponse{NotificationVersion: 1}, nil).
+					AnyTimes()
 
-	metadata, err := s.DomainManager.GetMetadata(context.Background())
-	s.Nil(err)
-	notificationVersion := metadata.NotificationVersion
-	err = s.domainReplicator.Execute(updateTask)
-	s.Nil(err)
-
-	resp, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{Name: name})
-	s.Nil(err)
-	s.NotNil(resp)
-	s.Equal(id, resp.Info.ID)
-	s.Equal(name, resp.Info.Name)
-	s.Equal(persistence.DomainStatusRegistered, resp.Info.Status)
-	s.Equal(description, resp.Info.Description)
-	s.Equal(ownerEmail, resp.Info.OwnerEmail)
-	s.Equal(domainData, resp.Info.Data)
-	s.Equal(retention, resp.Config.Retention)
-	s.Equal(emitMetric, resp.Config.EmitMetric)
-	s.Equal(historyArchivalStatus, resp.Config.HistoryArchivalStatus)
-	s.Equal(historyArchivalURI, resp.Config.HistoryArchivalURI)
-	s.Equal(visibilityArchivalStatus, resp.Config.VisibilityArchivalStatus)
-	s.Equal(visibilityArchivalURI, resp.Config.VisibilityArchivalURI)
-	s.Equal(clusterActive, resp.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(clusters), resp.ReplicationConfig.Clusters)
-	s.Equal(configVersion, resp.ConfigVersion)
-	s.Equal(failoverVersion, resp.FailoverVersion)
-	s.Equal(int64(0), resp.FailoverNotificationVersion)
-	s.Equal(notificationVersion, resp.NotificationVersion)
-}
-
-func (s *domainReplicationTaskExecutorSuite) TestExecute_UpdateDomainTask_UpdateConfig_UpdateActiveCluster() {
-	operation := types.DomainOperationCreate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	data := map[string]string{"k": "v"}
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusEnabled
-	historyArchivalURI := "some random history archival uri"
-	visibilityArchivalStatus := types.ArchivalStatusEnabled
-	visibilityArchivalURI := "some random visibility archival uri"
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(0)
-	failoverVersion := int64(59)
-	clusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: clusterActive,
+				mockDomainManager.EXPECT().
+					CreateDomain(gomock.Any(), &types.DomainTaskAttributes{
+						Info: &types.DomainInfo{
+							Name: "nonexistentDomain",
+						},
+					}).
+					Return(&persistence.CreateDomainResponse{
+						ID: "nonexistentDomain",
+					}, nil).
+					AnyTimes()
+			},
 		},
 		{
-			ClusterName: clusterStandby,
-		},
-	}
+			name: "Record Not Updated then return nil",
+			task: &types.DomainTaskAttributes{
+				Info: &types.DomainInfo{
+					Name:   "testDomain",
+					Status: types.DomainStatusRegistered.Ptr(),
+				},
+				Config: &types.DomainConfiguration{
+					BadBinaries: &types.BadBinaries{
+						Binaries: map[string]*types.BadBinaryInfo{
+							"checksum1": {
+								Reason:          "reasontest",
+								Operator:        "operatortest",
+								CreatedTimeNano: func() *int64 { var ct int64 = 12345; return &ct }(),
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetMetadata(gomock.Any()).
+					Return(&persistence.GetMetadataResponse{NotificationVersion: 1}, nil).AnyTimes()
 
-	createTask := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        data,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:   configVersion,
-		FailoverVersion: failoverVersion,
-	}
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.GetDomainResponse{
+						Info:              &persistence.DomainInfo{ID: "testDomainID", Name: "testDomain"},
+						Config:            &persistence.DomainConfig{},
+						ReplicationConfig: &persistence.DomainReplicationConfig{},
+					}, nil).
+					AnyTimes()
 
-	err := s.domainReplicator.Execute(createTask)
-	s.Nil(err)
+				mockDomainManager.EXPECT().
+					UpdateDomain(gomock.Any(), gomock.Any()).
+					Return(nil).
+					AnyTimes()
 
-	// success update case
-	updateOperation := types.DomainOperationUpdate
-	updateStatus := types.DomainStatusDeprecated
-	updateDescription := "other random domain test description"
-	updateOwnerEmail := "other random domain test owner"
-	updatedData := map[string]string{"k": "v1"}
-	updateRetention := int32(122)
-	updateEmitMetric := true
-	updateHistoryArchivalStatus := types.ArchivalStatusDisabled
-	updateHistoryArchivalURI := "some updated history archival uri"
-	updateVisibilityArchivalStatus := types.ArchivalStatusDisabled
-	updateVisibilityArchivalURI := "some updated visibility archival uri"
-	updateClusterActive := "other random active cluster name"
-	updateClusterStandby := "other random standby cluster name"
-	updateConfigVersion := configVersion + 1
-	updateFailoverVersion := failoverVersion + 1
-	updateClusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: updateClusterActive,
+			},
 		},
 		{
-			ClusterName: updateClusterStandby,
-		},
-	}
-	updateTask := &types.DomainTaskAttributes{
-		DomainOperation: &updateOperation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &updateStatus,
-			Description: updateDescription,
-			OwnerEmail:  updateOwnerEmail,
-			Data:        updatedData,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: updateRetention,
-			EmitMetric:                             updateEmitMetric,
-			HistoryArchivalStatus:                  updateHistoryArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     updateHistoryArchivalURI,
-			VisibilityArchivalStatus:               updateVisibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  updateVisibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: updateClusterActive,
-			Clusters:          updateClusters,
-		},
-		ConfigVersion:   updateConfigVersion,
-		FailoverVersion: updateFailoverVersion,
-	}
-	metadata, err := s.DomainManager.GetMetadata(context.Background())
-	s.Nil(err)
-	notificationVersion := metadata.NotificationVersion
-	err = s.domainReplicator.Execute(updateTask)
-	s.Nil(err)
-	resp, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{Name: name})
-	s.Nil(err)
-	s.NotNil(resp)
-	s.Equal(id, resp.Info.ID)
-	s.Equal(name, resp.Info.Name)
-	s.Equal(persistence.DomainStatusDeprecated, resp.Info.Status)
-	s.Equal(updateDescription, resp.Info.Description)
-	s.Equal(updateOwnerEmail, resp.Info.OwnerEmail)
-	s.Equal(updatedData, resp.Info.Data)
-	s.Equal(updateRetention, resp.Config.Retention)
-	s.Equal(updateEmitMetric, resp.Config.EmitMetric)
-	s.Equal(updateHistoryArchivalStatus, resp.Config.HistoryArchivalStatus)
-	s.Equal(updateHistoryArchivalURI, resp.Config.HistoryArchivalURI)
-	s.Equal(updateVisibilityArchivalStatus, resp.Config.VisibilityArchivalStatus)
-	s.Equal(updateVisibilityArchivalURI, resp.Config.VisibilityArchivalURI)
-	s.Equal(updateClusterActive, resp.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(updateClusters), resp.ReplicationConfig.Clusters)
-	s.Equal(updateConfigVersion, resp.ConfigVersion)
-	s.Equal(updateFailoverVersion, resp.FailoverVersion)
-	s.Equal(notificationVersion, resp.FailoverNotificationVersion)
-	s.Equal(notificationVersion, resp.NotificationVersion)
-}
+			name: "Update Domain with BadBinaries Set",
+			task: &types.DomainTaskAttributes{
+				Info: &types.DomainInfo{
+					Name: "existingDomainName",
+				},
+				Config: &types.DomainConfiguration{
+					BadBinaries: &types.BadBinaries{
+						Binaries: map[string]*types.BadBinaryInfo{},
+					},
+				},
+			},
+			wantErr: true,
+			setup: func(mockDomainManager *persistence.MockDomainManager) {
+				mockDomainManager.EXPECT().
+					GetMetadata(gomock.Any()).
+					Return(&persistence.GetMetadataResponse{NotificationVersion: 1}, nil).
+					AnyTimes()
 
-func (s *domainReplicationTaskExecutorSuite) TestExecute_UpdateDomainTask_UpdateConfig_NoUpdateActiveCluster() {
-	operation := types.DomainOperationCreate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	data := map[string]string{"k": "v"}
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusDisabled
-	historyArchivalURI := ""
-	visibilityArchivalStatus := types.ArchivalStatusDisabled
-	visibilityArchivalURI := ""
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(0)
-	failoverVersion := int64(59)
-	previousFailoverVersion := int64(55)
-	clusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: clusterActive,
-		},
-		{
-			ClusterName: clusterStandby,
-		},
-	}
+				mockDomainManager.EXPECT().
+					GetDomain(gomock.Any(), gomock.Any()).
+					Return(&persistence.GetDomainResponse{}, nil).
+					AnyTimes()
 
-	createTask := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        data,
+				mockDomainManager.EXPECT().
+					UpdateDomain(gomock.Any(), gomock.Any()).
+					Return(nil).
+					AnyTimes()
+			},
 		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:   configVersion,
-		FailoverVersion: failoverVersion,
 	}
+	assert := assert.New(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockCtrl := gomock.NewController(t)
 
-	err := s.domainReplicator.Execute(createTask)
-	s.Nil(err)
+			mockDomainManager := persistence.NewMockDomainManager(mockCtrl)
+			mockLogger := testlogger.New(t)
+			mockTimeSource := clock.NewMockedTimeSourceAt(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)) // Fixed time
 
-	// success update case
-	updateOperation := types.DomainOperationUpdate
-	updateStatus := types.DomainStatusDeprecated
-	updateDescription := "other random domain test description"
-	updateOwnerEmail := "other random domain test owner"
-	updateData := map[string]string{"k": "v2"}
-	updateRetention := int32(122)
-	updateEmitMetric := true
-	updateHistoryArchivalStatus := types.ArchivalStatusEnabled
-	updateHistoryArchivalURI := "some updated history archival uri"
-	updateVisibilityArchivalStatus := types.ArchivalStatusEnabled
-	updateVisibilityArchivalURI := "some updated visibility archival uri"
-	updateClusterActive := "other random active cluster name"
-	updateClusterStandby := "other random standby cluster name"
-	updateConfigVersion := configVersion + 1
-	updateFailoverVersion := failoverVersion - 1
-	updateClusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: updateClusterActive,
-		},
-		{
-			ClusterName: updateClusterStandby,
-		},
-	}
-	updateTask := &types.DomainTaskAttributes{
-		DomainOperation: &updateOperation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &updateStatus,
-			Description: updateDescription,
-			OwnerEmail:  updateOwnerEmail,
-			Data:        updateData,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: updateRetention,
-			EmitMetric:                             updateEmitMetric,
-			HistoryArchivalStatus:                  updateHistoryArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     updateHistoryArchivalURI,
-			VisibilityArchivalStatus:               updateVisibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  updateVisibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: updateClusterActive,
-			Clusters:          updateClusters,
-		},
-		ConfigVersion:           updateConfigVersion,
-		FailoverVersion:         updateFailoverVersion,
-		PreviousFailoverVersion: previousFailoverVersion,
-	}
-	metadata, err := s.DomainManager.GetMetadata(context.Background())
-	s.Nil(err)
-	notificationVersion := metadata.NotificationVersion
-	err = s.domainReplicator.Execute(updateTask)
-	s.Nil(err)
-	resp, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{Name: name})
-	s.Nil(err)
-	s.NotNil(resp)
-	s.Equal(id, resp.Info.ID)
-	s.Equal(name, resp.Info.Name)
-	s.Equal(persistence.DomainStatusDeprecated, resp.Info.Status)
-	s.Equal(updateDescription, resp.Info.Description)
-	s.Equal(updateOwnerEmail, resp.Info.OwnerEmail)
-	s.Equal(updateData, resp.Info.Data)
-	s.Equal(updateRetention, resp.Config.Retention)
-	s.Equal(updateEmitMetric, resp.Config.EmitMetric)
-	s.Equal(updateHistoryArchivalStatus, resp.Config.HistoryArchivalStatus)
-	s.Equal(updateHistoryArchivalURI, resp.Config.HistoryArchivalURI)
-	s.Equal(updateVisibilityArchivalStatus, resp.Config.VisibilityArchivalStatus)
-	s.Equal(updateVisibilityArchivalURI, resp.Config.VisibilityArchivalURI)
-	s.Equal(clusterActive, resp.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(updateClusters), resp.ReplicationConfig.Clusters)
-	s.Equal(updateConfigVersion, resp.ConfigVersion)
-	s.Equal(failoverVersion, resp.FailoverVersion)
-	s.Equal(common.InitialPreviousFailoverVersion, resp.PreviousFailoverVersion)
-	s.Equal(int64(0), resp.FailoverNotificationVersion)
-	s.Equal(notificationVersion, resp.NotificationVersion)
-}
+			executor := &domainReplicationTaskExecutorImpl{
+				domainManager: mockDomainManager,
+				logger:        mockLogger,
+				timeSource:    mockTimeSource,
+			}
+			tt.setup(mockDomainManager)
 
-func (s *domainReplicationTaskExecutorSuite) TestExecute_UpdateDomainTask_NoUpdateConfig_UpdateActiveCluster() {
-	operation := types.DomainOperationCreate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	data := map[string]string{"k": "v"}
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusEnabled
-	historyArchivalURI := "some random history archival uri"
-	visibilityArchivalStatus := types.ArchivalStatusEnabled
-	visibilityArchivalURI := "some random visibility archival uri"
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(0)
-	failoverVersion := int64(59)
-	previousFailoverVersion := int64(55)
-	clusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: clusterActive,
-		},
-		{
-			ClusterName: clusterStandby,
-		},
-	}
+			err := executor.handleDomainUpdateReplicationTask(context.Background(), tt.task)
+			if tt.wantErr {
+				assert.Error(err, "Expected an error for test case: %s", tt.name)
+			} else {
+				assert.NoError(err, "Expected no error for test case: %s", tt.name)
+			}
 
-	createTask := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        data,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:           configVersion,
-		FailoverVersion:         failoverVersion,
-		PreviousFailoverVersion: previousFailoverVersion,
+		})
 	}
-
-	err := s.domainReplicator.Execute(createTask)
-	s.Nil(err)
-	resp1, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{Name: name})
-	s.Nil(err)
-	s.NotNil(resp1)
-	s.Equal(id, resp1.Info.ID)
-	s.Equal(name, resp1.Info.Name)
-	s.Equal(persistence.DomainStatusRegistered, resp1.Info.Status)
-	s.Equal(description, resp1.Info.Description)
-	s.Equal(ownerEmail, resp1.Info.OwnerEmail)
-	s.Equal(data, resp1.Info.Data)
-	s.Equal(retention, resp1.Config.Retention)
-	s.Equal(emitMetric, resp1.Config.EmitMetric)
-	s.Equal(historyArchivalStatus, resp1.Config.HistoryArchivalStatus)
-	s.Equal(historyArchivalURI, resp1.Config.HistoryArchivalURI)
-	s.Equal(visibilityArchivalStatus, resp1.Config.VisibilityArchivalStatus)
-	s.Equal(visibilityArchivalURI, resp1.Config.VisibilityArchivalURI)
-	s.Equal(clusterActive, resp1.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(clusters), resp1.ReplicationConfig.Clusters)
-	s.Equal(configVersion, resp1.ConfigVersion)
-	s.Equal(failoverVersion, resp1.FailoverVersion)
-	s.Equal(common.InitialPreviousFailoverVersion, resp1.PreviousFailoverVersion)
-
-	// success update case
-	updateOperation := types.DomainOperationUpdate
-	updateStatus := types.DomainStatusDeprecated
-	updateDescription := "other random domain test description"
-	updateOwnerEmail := "other random domain test owner"
-	updatedData := map[string]string{"k": "v2"}
-	updateRetention := int32(122)
-	updateEmitMetric := true
-	updateClusterActive := "other random active cluster name"
-	updateClusterStandby := "other random standby cluster name"
-	updateConfigVersion := configVersion - 1
-	updateFailoverVersion := failoverVersion + 1
-	updateClusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: updateClusterActive,
-		},
-		{
-			ClusterName: updateClusterStandby,
-		},
-	}
-	updateTask := &types.DomainTaskAttributes{
-		DomainOperation: &updateOperation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &updateStatus,
-			Description: updateDescription,
-			OwnerEmail:  updateOwnerEmail,
-			Data:        updatedData,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: updateRetention,
-			EmitMetric:                             updateEmitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: updateClusterActive,
-			Clusters:          updateClusters,
-		},
-		ConfigVersion:           updateConfigVersion,
-		FailoverVersion:         updateFailoverVersion,
-		PreviousFailoverVersion: failoverVersion,
-	}
-	metadata, err := s.DomainManager.GetMetadata(context.Background())
-	s.Nil(err)
-	notificationVersion := metadata.NotificationVersion
-	err = s.domainReplicator.Execute(updateTask)
-	s.Nil(err)
-	resp, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{Name: name})
-	s.Nil(err)
-	s.NotNil(resp)
-	s.Equal(id, resp.Info.ID)
-	s.Equal(name, resp.Info.Name)
-	s.Equal(persistence.DomainStatusRegistered, resp.Info.Status)
-	s.Equal(description, resp.Info.Description)
-	s.Equal(ownerEmail, resp.Info.OwnerEmail)
-	s.Equal(data, resp.Info.Data)
-	s.Equal(retention, resp.Config.Retention)
-	s.Equal(emitMetric, resp.Config.EmitMetric)
-	s.Equal(historyArchivalStatus, resp.Config.HistoryArchivalStatus)
-	s.Equal(historyArchivalURI, resp.Config.HistoryArchivalURI)
-	s.Equal(visibilityArchivalStatus, resp.Config.VisibilityArchivalStatus)
-	s.Equal(visibilityArchivalURI, resp.Config.VisibilityArchivalURI)
-	s.Equal(updateClusterActive, resp.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(clusters), resp.ReplicationConfig.Clusters)
-	s.Equal(configVersion, resp.ConfigVersion)
-	s.Equal(updateFailoverVersion, resp.FailoverVersion)
-	s.Equal(notificationVersion, resp.FailoverNotificationVersion)
-	s.Equal(notificationVersion, resp.NotificationVersion)
-	s.Equal(failoverVersion, resp.PreviousFailoverVersion)
-}
-
-func (s *domainReplicationTaskExecutorSuite) TestExecute_UpdateDomainTask_NoUpdateConfig_NoUpdateActiveCluster() {
-	operation := types.DomainOperationCreate
-	id := uuid.New()
-	name := "some random domain test name"
-	status := types.DomainStatusRegistered
-	description := "some random test description"
-	ownerEmail := "some random test owner"
-	data := map[string]string{"k": "v"}
-	retention := int32(10)
-	emitMetric := true
-	historyArchivalStatus := types.ArchivalStatusEnabled
-	historyArchivalURI := "some random history archival uri"
-	visibilityArchivalStatus := types.ArchivalStatusEnabled
-	visibilityArchivalURI := "some random visibility archival uri"
-	clusterActive := "some random active cluster name"
-	clusterStandby := "some random standby cluster name"
-	configVersion := int64(0)
-	failoverVersion := int64(59)
-	previousFailoverVersion := int64(55)
-	clusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: clusterActive,
-		},
-		{
-			ClusterName: clusterStandby,
-		},
-	}
-
-	createTask := &types.DomainTaskAttributes{
-		DomainOperation: &operation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &status,
-			Description: description,
-			OwnerEmail:  ownerEmail,
-			Data:        data,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: retention,
-			EmitMetric:                             emitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: clusterActive,
-			Clusters:          clusters,
-		},
-		ConfigVersion:   configVersion,
-		FailoverVersion: failoverVersion,
-	}
-	metadata, err := s.DomainManager.GetMetadata(context.Background())
-	s.Nil(err)
-	notificationVersion := metadata.NotificationVersion
-	err = s.domainReplicator.Execute(createTask)
-	s.Nil(err)
-
-	// success update case
-	updateOperation := types.DomainOperationUpdate
-	updateStatus := types.DomainStatusDeprecated
-	updateDescription := "other random domain test description"
-	updateOwnerEmail := "other random domain test owner"
-	updatedData := map[string]string{"k": "v2"}
-	updateRetention := int32(122)
-	updateEmitMetric := true
-	updateClusterActive := "other random active cluster name"
-	updateClusterStandby := "other random standby cluster name"
-	updateConfigVersion := configVersion - 1
-	updateFailoverVersion := failoverVersion - 1
-	updateClusters := []*types.ClusterReplicationConfiguration{
-		{
-			ClusterName: updateClusterActive,
-		},
-		{
-			ClusterName: updateClusterStandby,
-		},
-	}
-	updateTask := &types.DomainTaskAttributes{
-		DomainOperation: &updateOperation,
-		ID:              id,
-		Info: &types.DomainInfo{
-			Name:        name,
-			Status:      &updateStatus,
-			Description: updateDescription,
-			OwnerEmail:  updateOwnerEmail,
-			Data:        updatedData,
-		},
-		Config: &types.DomainConfiguration{
-			WorkflowExecutionRetentionPeriodInDays: updateRetention,
-			EmitMetric:                             updateEmitMetric,
-			HistoryArchivalStatus:                  historyArchivalStatus.Ptr(),
-			HistoryArchivalURI:                     historyArchivalURI,
-			VisibilityArchivalStatus:               visibilityArchivalStatus.Ptr(),
-			VisibilityArchivalURI:                  visibilityArchivalURI,
-		},
-		ReplicationConfig: &types.DomainReplicationConfiguration{
-			ActiveClusterName: updateClusterActive,
-			Clusters:          updateClusters,
-		},
-		ConfigVersion:           updateConfigVersion,
-		FailoverVersion:         updateFailoverVersion,
-		PreviousFailoverVersion: previousFailoverVersion,
-	}
-	err = s.domainReplicator.Execute(updateTask)
-	s.Nil(err)
-	resp, err := s.DomainManager.GetDomain(context.Background(), &persistence.GetDomainRequest{Name: name})
-	s.Nil(err)
-	s.NotNil(resp)
-	s.Equal(id, resp.Info.ID)
-	s.Equal(name, resp.Info.Name)
-	s.Equal(persistence.DomainStatusRegistered, resp.Info.Status)
-	s.Equal(description, resp.Info.Description)
-	s.Equal(ownerEmail, resp.Info.OwnerEmail)
-	s.Equal(data, resp.Info.Data)
-	s.Equal(retention, resp.Config.Retention)
-	s.Equal(emitMetric, resp.Config.EmitMetric)
-	s.Equal(historyArchivalStatus, resp.Config.HistoryArchivalStatus)
-	s.Equal(historyArchivalURI, resp.Config.HistoryArchivalURI)
-	s.Equal(visibilityArchivalStatus, resp.Config.VisibilityArchivalStatus)
-	s.Equal(visibilityArchivalURI, resp.Config.VisibilityArchivalURI)
-	s.Equal(clusterActive, resp.ReplicationConfig.ActiveClusterName)
-	s.Equal(s.domainReplicator.convertClusterReplicationConfigFromThrift(clusters), resp.ReplicationConfig.Clusters)
-	s.Equal(configVersion, resp.ConfigVersion)
-	s.Equal(failoverVersion, resp.FailoverVersion)
-	s.Equal(common.InitialPreviousFailoverVersion, resp.PreviousFailoverVersion)
-	s.Equal(int64(0), resp.FailoverNotificationVersion)
-	s.Equal(notificationVersion, resp.NotificationVersion)
 }

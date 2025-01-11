@@ -45,6 +45,8 @@ const (
 
 	FailoverVersion1 = 301
 	FailoverVersion2 = 302
+
+	ErrorReason = "ErrorReason"
 )
 
 var (
@@ -84,6 +86,14 @@ var (
 			"zone-2": {
 				Name:  "zone-2",
 				State: types.IsolationGroupStateDrained,
+			},
+		},
+		AsyncWorkflowConfig: &types.AsyncWorkflowConfiguration{
+			Enabled:   true,
+			QueueType: "custom",
+			QueueConfig: &types.DataBlob{
+				EncodingType: types.EncodingTypeThriftRW.Ptr(),
+				Data:         []byte("custom queue config"),
 			},
 		},
 	}

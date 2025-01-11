@@ -55,6 +55,12 @@ type (
 		AWSSigning AWSSigning `yaml:"awsSigning"`
 		// optional to use Signed Certificates over https
 		TLS TLS `yaml:"tls"`
+		// optional to add custom headers
+		CustomHeaders map[string]string   `yaml:"customHeaders,omitempty"`
+		Migration     VisibilityMigration `yaml:"migration"`
+		// optional, will use default consumer name if not provided
+		// default consumerName is topic + "-consumer"
+		ConsumerName string `yaml:"consumerName"`
 	}
 
 	// AWSSigning contains config to enable signing,
@@ -81,6 +87,10 @@ type (
 	// See more in https://github.com/aws/aws-sdk-go/blob/3974dd034387fbc7cf09c8cd2400787ce07f3285/aws/session/session.go#L147
 	AWSEnvironmentCredential struct {
 		Region string `yaml:"region"`
+	}
+
+	VisibilityMigration struct {
+		Enabled bool `yaml:"enabled"`
 	}
 )
 
@@ -138,4 +148,12 @@ func (a AWSSigning) GetCredentials() (*credentials.Credentials, *string, error) 
 	)
 
 	return awsCredentials, &a.StaticCredential.Region, nil
+}
+
+// GetCustomHeader returns the header for the specified key
+func (cfg *ElasticSearchConfig) GetCustomHeader(headerKey string) string {
+	if headerValue, ok := cfg.CustomHeaders[headerKey]; ok {
+		return headerValue
+	}
+	return ""
 }

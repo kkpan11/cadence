@@ -1,13 +1,15 @@
 frontend.enableClientVersionCheck:
   - value: true
 system.advancedVisibilityWritingMode:
-  - value: "triple"
+  - value: "on"
 system.enableReadVisibilityFromES:
   - value: false
 system.enableReadVisibilityFromPinot:
   - value: true
+system.enableVisibilityDoubleRead:
+  - value: false
 system.enableLogCustomerQueryParameter:
-    -value: false
+  - value: false
 frontend.validSearchAttributes:
   - value:
       DomainID: 1
@@ -48,4 +50,3 @@ system.minRetentionDays:
 history.EnableConsistentQueryByDomain:
 - value: true
   constraints: {}
-

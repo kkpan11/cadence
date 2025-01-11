@@ -39,6 +39,7 @@ type Config struct {
 	VisibilityListMaxQPS            dynamicconfig.IntPropertyFnWithDomainFilter
 	EnableReadVisibilityFromES      dynamicconfig.BoolPropertyFnWithDomainFilter
 	EnableReadVisibilityFromPinot   dynamicconfig.BoolPropertyFnWithDomainFilter
+	EnableVisibilityDoubleRead      dynamicconfig.BoolPropertyFnWithDomainFilter
 	EnableLogCustomerQueryParameter dynamicconfig.BoolPropertyFnWithDomainFilter
 	// deprecated: never read from
 	ESVisibilityListMaxQPS            dynamicconfig.IntPropertyFnWithDomainFilter
@@ -62,6 +63,10 @@ type Config struct {
 	ShutdownDrainDuration             dynamicconfig.DurationPropertyFn
 	Lockdown                          dynamicconfig.BoolPropertyFnWithDomainFilter
 
+	// global ratelimiter config, uses GlobalDomain*RPS for RPS configuration
+	GlobalRatelimiterKeyMode        dynamicconfig.StringPropertyWithRatelimitKeyFilter
+	GlobalRatelimiterUpdateInterval dynamicconfig.DurationPropertyFn
+
 	// isolation configuration
 	EnableTasklistIsolation dynamicconfig.BoolPropertyFnWithDomainFilter
 
@@ -74,9 +79,6 @@ type Config struct {
 	WorkflowTypeMaxLength dynamicconfig.IntPropertyFnWithDomainFilter
 	RequestIDMaxLength    dynamicconfig.IntPropertyFnWithDomainFilter
 	TaskListNameMaxLength dynamicconfig.IntPropertyFnWithDomainFilter
-
-	// Persistence settings
-	HistoryMgrNumConns dynamicconfig.IntPropertyFn
 
 	// security protection settings
 	EnableAdminProtection         dynamicconfig.BoolPropertyFn
@@ -133,6 +135,7 @@ func NewConfig(dc *dynamicconfig.Collection, numHistoryShards int, isAdvancedVis
 		EnableReadVisibilityFromES:                  dc.GetBoolPropertyFilteredByDomain(dynamicconfig.EnableReadVisibilityFromES),
 		EnableReadVisibilityFromPinot:               dc.GetBoolPropertyFilteredByDomain(dynamicconfig.EnableReadVisibilityFromPinot),
 		EnableLogCustomerQueryParameter:             dc.GetBoolPropertyFilteredByDomain(dynamicconfig.EnableLogCustomerQueryParameter),
+		EnableVisibilityDoubleRead:                  dc.GetBoolPropertyFilteredByDomain(dynamicconfig.EnableVisibilityDoubleRead),
 		ESIndexMaxResultWindow:                      dc.GetIntProperty(dynamicconfig.FrontendESIndexMaxResultWindow),
 		HistoryMaxPageSize:                          dc.GetIntPropertyFilteredByDomain(dynamicconfig.FrontendHistoryMaxPageSize),
 		UserRPS:                                     dc.GetIntProperty(dynamicconfig.FrontendUserRPS),
@@ -147,6 +150,8 @@ func NewConfig(dc *dynamicconfig.Collection, numHistoryShards int, isAdvancedVis
 		GlobalDomainWorkerRPS:                       dc.GetIntPropertyFilteredByDomain(dynamicconfig.FrontendGlobalDomainWorkerRPS),
 		GlobalDomainVisibilityRPS:                   dc.GetIntPropertyFilteredByDomain(dynamicconfig.FrontendGlobalDomainVisibilityRPS),
 		GlobalDomainAsyncRPS:                        dc.GetIntPropertyFilteredByDomain(dynamicconfig.FrontendGlobalDomainAsyncRPS),
+		GlobalRatelimiterKeyMode:                    dc.GetStringPropertyFilteredByRatelimitKey(dynamicconfig.FrontendGlobalRatelimiterMode),
+		GlobalRatelimiterUpdateInterval:             dc.GetDurationProperty(dynamicconfig.GlobalRatelimiterUpdateInterval),
 		MaxIDLengthWarnLimit:                        dc.GetIntProperty(dynamicconfig.MaxIDLengthWarnLimit),
 		DomainNameMaxLength:                         dc.GetIntPropertyFilteredByDomain(dynamicconfig.DomainNameMaxLength),
 		IdentityMaxLength:                           dc.GetIntPropertyFilteredByDomain(dynamicconfig.IdentityMaxLength),
@@ -155,7 +160,6 @@ func NewConfig(dc *dynamicconfig.Collection, numHistoryShards int, isAdvancedVis
 		WorkflowTypeMaxLength:                       dc.GetIntPropertyFilteredByDomain(dynamicconfig.WorkflowTypeMaxLength),
 		RequestIDMaxLength:                          dc.GetIntPropertyFilteredByDomain(dynamicconfig.RequestIDMaxLength),
 		TaskListNameMaxLength:                       dc.GetIntPropertyFilteredByDomain(dynamicconfig.TaskListNameMaxLength),
-		HistoryMgrNumConns:                          dc.GetIntProperty(dynamicconfig.FrontendHistoryMgrNumConns),
 		EnableAdminProtection:                       dc.GetBoolProperty(dynamicconfig.EnableAdminProtection),
 		AdminOperationToken:                         dc.GetStringProperty(dynamicconfig.AdminOperationToken),
 		DisableListVisibilityByFilter:               dc.GetBoolPropertyFilteredByDomain(dynamicconfig.DisableListVisibilityByFilter),
@@ -186,6 +190,7 @@ func NewConfig(dc *dynamicconfig.Collection, numHistoryShards int, isAdvancedVis
 			MaxRetentionDays:       dc.GetIntProperty(dynamicconfig.MaxRetentionDays),
 			FailoverCoolDown:       dc.GetDurationPropertyFilteredByDomain(dynamicconfig.FrontendFailoverCoolDown),
 			RequiredDomainDataKeys: dc.GetMapProperty(dynamicconfig.RequiredDomainDataKeys),
+			FailoverHistoryMaxSize: dc.GetIntPropertyFilteredByDomain(dynamicconfig.FrontendFailoverHistoryMaxSize),
 		},
 		HostName: hostName,
 	}

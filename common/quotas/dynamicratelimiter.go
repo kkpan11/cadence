@@ -26,6 +26,8 @@ import (
 	"context"
 
 	"golang.org/x/time/rate"
+
+	"github.com/uber/cadence/common/clock"
 )
 
 // DynamicRateLimiter implements a dynamic config wrapper around the rate limiter,
@@ -58,8 +60,12 @@ func (d *DynamicRateLimiter) Wait(ctx context.Context) error {
 }
 
 // Reserve reserves a rate limit token
-func (d *DynamicRateLimiter) Reserve() *rate.Reservation {
+func (d *DynamicRateLimiter) Reserve() clock.Reservation {
 	rps := d.rps()
 	d.rl.UpdateMaxDispatch(&rps)
 	return d.rl.Reserve()
+}
+
+func (d *DynamicRateLimiter) Limit() rate.Limit {
+	return rate.Limit(d.rps())
 }

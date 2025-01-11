@@ -261,12 +261,24 @@ type (
 		PartitionConfig  map[string]string
 	}
 
+	TaskListPartition struct {
+		IsolationGroups []string
+	}
+
+	TaskListPartitionConfig struct {
+		Version            int64
+		NumReadPartitions  int32
+		NumWritePartitions int32
+		ReadPartitions     map[int32]*TaskListPartition
+		WritePartitions    map[int32]*TaskListPartition
+	}
 	// TaskListInfo blob in a serialization agnostic format
 	TaskListInfo struct {
-		Kind            int16
-		AckLevel        int64
-		ExpiryTimestamp time.Time
-		LastUpdated     time.Time
+		Kind                    int16
+		AckLevel                int64
+		ExpiryTimestamp         time.Time
+		LastUpdated             time.Time
+		AdaptivePartitionConfig *TaskListPartitionConfig
 	}
 
 	// TransferTaskInfo blob in a serialization agnostic format

@@ -35,8 +35,6 @@ const (
 		`cluster_timer_ack_level: ?, ` +
 		`transfer_processing_queue_states: ?, ` +
 		`transfer_processing_queue_states_encoding: ?, ` +
-		`cross_cluster_processing_queue_states: ?, ` +
-		`cross_cluster_processing_queue_states_encoding: ?, ` +
 		`timer_processing_queue_states: ?, ` +
 		`timer_processing_queue_states_encoding: ?, ` +
 		`domain_notification_version: ?, ` +
@@ -47,7 +45,7 @@ const (
 		`}`
 
 	templateCreateShardQuery = `INSERT INTO executions (` +
-		`shard_id, type, domain_id, workflow_id, run_id, visibility_ts, task_id, shard, range_id)` +
+		`shard_id, type, domain_id, workflow_id, run_id, visibility_ts, task_id, shard, range_id) ` +
 		`VALUES(?, ?, ?, ?, ?, ?, ?, ` + templateShardType + `, ?) IF NOT EXISTS`
 
 	templateGetShardQuery = `SELECT shard, range_id ` +

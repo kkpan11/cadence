@@ -28,7 +28,7 @@ import (
 	"time"
 
 	"github.com/uber/cadence/common"
-	p "github.com/uber/cadence/common/persistence"
+	"github.com/uber/cadence/common/persistence"
 	"github.com/uber/cadence/common/persistence/nosql/nosqlplugin"
 	"github.com/uber/cadence/common/persistence/nosql/nosqlplugin/cassandra/gocql"
 	"github.com/uber/cadence/common/types"
@@ -38,6 +38,7 @@ var _ nosqlplugin.WorkflowCRUD = (*cdb)(nil)
 
 func (db *cdb) InsertWorkflowExecutionWithTasks(
 	ctx context.Context,
+	requests *nosqlplugin.WorkflowRequestsWriteRequest,
 	currentWorkflowRequest *nosqlplugin.CurrentWorkflowWriteRequest,
 	execution *nosqlplugin.WorkflowExecutionRequest,
 	transferTasks []*nosqlplugin.TransferTask,
@@ -49,26 +50,31 @@ func (db *cdb) InsertWorkflowExecutionWithTasks(
 	shardID := shardCondition.ShardID
 	domainID := execution.DomainID
 	workflowID := execution.WorkflowID
+	timeStamp := db.timeSrc.Now()
 
 	batch := db.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 
-	err := createOrUpdateCurrentWorkflow(batch, shardID, domainID, workflowID, currentWorkflowRequest)
+	err := insertOrUpsertWorkflowRequestRow(batch, requests, timeStamp)
+	if err != nil {
+		return err
+	}
+	err = createOrUpdateCurrentWorkflow(batch, shardID, domainID, workflowID, currentWorkflowRequest, timeStamp)
 	if err != nil {
 		return err
 	}
 
-	err = createWorkflowExecutionWithMergeMaps(batch, shardID, domainID, workflowID, execution)
+	err = createWorkflowExecutionWithMergeMaps(batch, shardID, domainID, workflowID, execution, timeStamp)
 	if err != nil {
 		return err
 	}
 
-	createTransferTasks(batch, shardID, domainID, workflowID, transferTasks)
-	createReplicationTasks(batch, shardID, domainID, workflowID, replicationTasks)
-	createCrossClusterTasks(batch, shardID, domainID, workflowID, crossClusterTasks)
-	createTimerTasks(batch, shardID, domainID, workflowID, timerTasks)
-	assertShardRangeID(batch, shardID, shardCondition.RangeID)
+	createTransferTasks(batch, shardID, domainID, workflowID, transferTasks, timeStamp)
+	createReplicationTasks(batch, shardID, domainID, workflowID, replicationTasks, timeStamp)
+	createCrossClusterTasks(batch, shardID, domainID, workflowID, crossClusterTasks, timeStamp)
+	createTimerTasks(batch, shardID, domainID, workflowID, timerTasks, timeStamp)
+	assertShardRangeID(batch, shardID, shardCondition.RangeID, timeStamp)
 
-	return executeCreateWorkflowBatchTransaction(db.session, batch, currentWorkflowRequest, execution, shardCondition)
+	return executeCreateWorkflowBatchTransaction(ctx, db.session, batch, currentWorkflowRequest, execution, shardCondition)
 }
 
 func (db *cdb) SelectCurrentWorkflow(
@@ -110,6 +116,7 @@ func (db *cdb) SelectCurrentWorkflow(
 
 func (db *cdb) UpdateWorkflowExecutionWithTasks(
 	ctx context.Context,
+	requests *nosqlplugin.WorkflowRequestsWriteRequest,
 	currentWorkflowRequest *nosqlplugin.CurrentWorkflowWriteRequest,
 	mutatedExecution *nosqlplugin.WorkflowExecutionRequest,
 	insertedExecution *nosqlplugin.WorkflowExecutionRequest,
@@ -123,6 +130,7 @@ func (db *cdb) UpdateWorkflowExecutionWithTasks(
 	shardID := shardCondition.ShardID
 	var domainID, workflowID string
 	var previousNextEventIDCondition int64
+	timeStamp := db.timeSrc.Now()
 	if mutatedExecution != nil {
 		domainID = mutatedExecution.DomainID
 		workflowID = mutatedExecution.WorkflowID
@@ -137,39 +145,43 @@ func (db *cdb) UpdateWorkflowExecutionWithTasks(
 
 	batch := db.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 
-	err := createOrUpdateCurrentWorkflow(batch, shardID, domainID, workflowID, currentWorkflowRequest)
+	err := insertOrUpsertWorkflowRequestRow(batch, requests, timeStamp)
+	if err != nil {
+		return err
+	}
+	err = createOrUpdateCurrentWorkflow(batch, shardID, domainID, workflowID, currentWorkflowRequest, timeStamp)
 	if err != nil {
 		return err
 	}
 
 	if mutatedExecution != nil {
-		err = updateWorkflowExecutionAndEventBufferWithMergeAndDeleteMaps(batch, shardID, domainID, workflowID, mutatedExecution)
+		err = updateWorkflowExecutionAndEventBufferWithMergeAndDeleteMaps(batch, shardID, domainID, workflowID, mutatedExecution, timeStamp)
 		if err != nil {
 			return err
 		}
 	}
 
 	if insertedExecution != nil {
-		err = createWorkflowExecutionWithMergeMaps(batch, shardID, domainID, workflowID, insertedExecution)
+		err = createWorkflowExecutionWithMergeMaps(batch, shardID, domainID, workflowID, insertedExecution, timeStamp)
 		if err != nil {
 			return err
 		}
 	}
 
 	if resetExecution != nil {
-		err = resetWorkflowExecutionAndMapsAndEventBuffer(batch, shardID, domainID, workflowID, resetExecution)
+		err = resetWorkflowExecutionAndMapsAndEventBuffer(batch, shardID, domainID, workflowID, resetExecution, timeStamp)
 		if err != nil {
 			return err
 		}
 	}
 
-	createTransferTasks(batch, shardID, domainID, workflowID, transferTasks)
-	createReplicationTasks(batch, shardID, domainID, workflowID, replicationTasks)
-	createCrossClusterTasks(batch, shardID, domainID, workflowID, crossClusterTasks)
-	createTimerTasks(batch, shardID, domainID, workflowID, timerTasks)
-	assertShardRangeID(batch, shardID, shardCondition.RangeID)
+	createTransferTasks(batch, shardID, domainID, workflowID, transferTasks, timeStamp)
+	createReplicationTasks(batch, shardID, domainID, workflowID, replicationTasks, timeStamp)
+	createCrossClusterTasks(batch, shardID, domainID, workflowID, crossClusterTasks, timeStamp)
+	createTimerTasks(batch, shardID, domainID, workflowID, timerTasks, timeStamp)
+	assertShardRangeID(batch, shardID, shardCondition.RangeID, timeStamp)
 
-	return executeUpdateWorkflowBatchTransaction(db.session, batch, currentWorkflowRequest, previousNextEventIDCondition, shardCondition)
+	return executeUpdateWorkflowBatchTransaction(ctx, db.session, batch, currentWorkflowRequest, previousNextEventIDCondition, shardCondition)
 }
 
 func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainID, workflowID, runID string) (*nosqlplugin.WorkflowExecution, error) {
@@ -191,12 +203,12 @@ func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainI
 	state := &nosqlplugin.WorkflowExecution{}
 	info := parseWorkflowExecutionInfo(result["execution"].(map[string]interface{}))
 	state.ExecutionInfo = info
-	state.VersionHistories = p.NewDataBlob(result["version_histories"].([]byte), common.EncodingType(result["version_histories_encoding"].(string)))
+	state.VersionHistories = persistence.NewDataBlob(result["version_histories"].([]byte), common.EncodingType(result["version_histories_encoding"].(string)))
 	// TODO: remove this after all 2DC workflows complete
 	replicationState := parseReplicationState(result["replication_state"].(map[string]interface{}))
 	state.ReplicationState = replicationState
 
-	activityInfos := make(map[int64]*p.InternalActivityInfo)
+	activityInfos := make(map[int64]*persistence.InternalActivityInfo)
 	aMap := result["activity_map"].(map[int64]map[string]interface{})
 	for key, value := range aMap {
 		info := parseActivityInfo(domainID, value)
@@ -204,7 +216,7 @@ func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainI
 	}
 	state.ActivityInfos = activityInfos
 
-	timerInfos := make(map[string]*p.TimerInfo)
+	timerInfos := make(map[string]*persistence.TimerInfo)
 	tMap := result["timer_map"].(map[string]map[string]interface{})
 	for key, value := range tMap {
 		info := parseTimerInfo(value)
@@ -212,7 +224,7 @@ func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainI
 	}
 	state.TimerInfos = timerInfos
 
-	childExecutionInfos := make(map[int64]*p.InternalChildExecutionInfo)
+	childExecutionInfos := make(map[int64]*persistence.InternalChildExecutionInfo)
 	cMap := result["child_executions_map"].(map[int64]map[string]interface{})
 	for key, value := range cMap {
 		info := parseChildExecutionInfo(value)
@@ -220,7 +232,7 @@ func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainI
 	}
 	state.ChildExecutionInfos = childExecutionInfos
 
-	requestCancelInfos := make(map[int64]*p.RequestCancelInfo)
+	requestCancelInfos := make(map[int64]*persistence.RequestCancelInfo)
 	rMap := result["request_cancel_map"].(map[int64]map[string]interface{})
 	for key, value := range rMap {
 		info := parseRequestCancelInfo(value)
@@ -228,7 +240,7 @@ func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainI
 	}
 	state.RequestCancelInfos = requestCancelInfos
 
-	signalInfos := make(map[int64]*p.SignalInfo)
+	signalInfos := make(map[int64]*persistence.SignalInfo)
 	sMap := result["signal_map"].(map[int64]map[string]interface{})
 	for key, value := range sMap {
 		info := parseSignalInfo(value)
@@ -244,7 +256,7 @@ func (db *cdb) SelectWorkflowExecution(ctx context.Context, shardID int, domainI
 	state.SignalRequestedIDs = signalRequestedIDs
 
 	eList := result["buffered_events_list"].([]map[string]interface{})
-	bufferedEventsBlobs := make([]*p.DataBlob, 0, len(eList))
+	bufferedEventsBlobs := make([]*persistence.DataBlob, 0, len(eList))
 	for _, v := range eList {
 		blob := parseHistoryEventBatchBlob(v)
 		bufferedEventsBlobs = append(bufferedEventsBlobs, blob)
@@ -284,7 +296,7 @@ func (db *cdb) DeleteWorkflowExecution(ctx context.Context, shardID int, domainI
 	return db.executeWithConsistencyAll(query)
 }
 
-func (db *cdb) SelectAllCurrentWorkflows(ctx context.Context, shardID int, pageToken []byte, pageSize int) ([]*p.CurrentWorkflowExecution, []byte, error) {
+func (db *cdb) SelectAllCurrentWorkflows(ctx context.Context, shardID int, pageToken []byte, pageSize int) ([]*persistence.CurrentWorkflowExecution, []byte, error) {
 	query := db.session.Query(
 		templateListCurrentExecutionsQuery,
 		shardID,
@@ -298,14 +310,14 @@ func (db *cdb) SelectAllCurrentWorkflows(ctx context.Context, shardID int, pageT
 		}
 	}
 	result := make(map[string]interface{})
-	var executions []*p.CurrentWorkflowExecution
+	var executions []*persistence.CurrentWorkflowExecution
 	for iter.MapScan(result) {
 		runID := result["run_id"].(gocql.UUID).String()
 		if runID != permanentRunID {
 			result = make(map[string]interface{})
 			continue
 		}
-		executions = append(executions, &p.CurrentWorkflowExecution{
+		executions = append(executions, &persistence.CurrentWorkflowExecution{
 			DomainID:     result["domain_id"].(gocql.UUID).String(),
 			WorkflowID:   result["workflow_id"].(string),
 			RunID:        permanentRunID,
@@ -316,11 +328,10 @@ func (db *cdb) SelectAllCurrentWorkflows(ctx context.Context, shardID int, pageT
 	}
 	nextPageToken := getNextPageToken(iter)
 
-	err := iter.Close()
-	return executions, nextPageToken, err
+	return executions, nextPageToken, iter.Close()
 }
 
-func (db *cdb) SelectAllWorkflowExecutions(ctx context.Context, shardID int, pageToken []byte, pageSize int) ([]*p.InternalListConcreteExecutionsEntity, []byte, error) {
+func (db *cdb) SelectAllWorkflowExecutions(ctx context.Context, shardID int, pageToken []byte, pageSize int) ([]*persistence.InternalListConcreteExecutionsEntity, []byte, error) {
 	query := db.session.Query(
 		templateListWorkflowExecutionQuery,
 		shardID,
@@ -335,25 +346,22 @@ func (db *cdb) SelectAllWorkflowExecutions(ctx context.Context, shardID int, pag
 	}
 
 	result := make(map[string]interface{})
-	var executions []*p.InternalListConcreteExecutionsEntity
+	var executions []*persistence.InternalListConcreteExecutionsEntity
 	for iter.MapScan(result) {
 		runID := result["run_id"].(gocql.UUID).String()
 		if runID == permanentRunID {
 			result = make(map[string]interface{})
 			continue
 		}
-		executions = append(executions, &p.InternalListConcreteExecutionsEntity{
+		executions = append(executions, &persistence.InternalListConcreteExecutionsEntity{
 			ExecutionInfo:    parseWorkflowExecutionInfo(result["execution"].(map[string]interface{})),
-			VersionHistories: p.NewDataBlob(result["version_histories"].([]byte), common.EncodingType(result["version_histories_encoding"].(string))),
+			VersionHistories: persistence.NewDataBlob(result["version_histories"].([]byte), common.EncodingType(result["version_histories_encoding"].(string))),
 		})
 		result = make(map[string]interface{})
 	}
 	nextPageToken := getNextPageToken(iter)
 
-	if err := iter.Close(); err != nil {
-		return nil, nil, err
-	}
-	return executions, nextPageToken, nil
+	return executions, nextPageToken, iter.Close()
 }
 
 func (db *cdb) IsWorkflowExecutionExists(ctx context.Context, shardID int, domainID, workflowID, runID string) (bool, error) {
@@ -444,8 +452,8 @@ func (db *cdb) RangeDeleteTransferTasks(ctx context.Context, shardID int, exclus
 
 func (db *cdb) SelectTimerTasksOrderByVisibilityTime(ctx context.Context, shardID, pageSize int, pageToken []byte, inclusiveMinTime, exclusiveMaxTime time.Time) ([]*nosqlplugin.TimerTask, []byte, error) {
 	// Reading timer tasks need to be quorum level consistent, otherwise we could loose task
-	minTimestamp := p.UnixNanoToDBTimestamp(inclusiveMinTime.UnixNano())
-	maxTimestamp := p.UnixNanoToDBTimestamp(exclusiveMaxTime.UnixNano())
+	minTimestamp := persistence.UnixNanoToDBTimestamp(inclusiveMinTime.UnixNano())
+	maxTimestamp := persistence.UnixNanoToDBTimestamp(exclusiveMaxTime.UnixNano())
 	query := db.session.Query(templateGetTimerTasksQuery,
 		shardID,
 		rowTypeTimerTask,
@@ -479,7 +487,7 @@ func (db *cdb) SelectTimerTasksOrderByVisibilityTime(ctx context.Context, shardI
 }
 
 func (db *cdb) DeleteTimerTask(ctx context.Context, shardID int, taskID int64, visibilityTimestamp time.Time) error {
-	ts := p.UnixNanoToDBTimestamp(visibilityTimestamp.UnixNano())
+	ts := persistence.UnixNanoToDBTimestamp(visibilityTimestamp.UnixNano())
 	query := db.session.Query(templateCompleteTimerTaskQuery,
 		shardID,
 		rowTypeTimerTask,
@@ -494,8 +502,8 @@ func (db *cdb) DeleteTimerTask(ctx context.Context, shardID int, taskID int64, v
 }
 
 func (db *cdb) RangeDeleteTimerTasks(ctx context.Context, shardID int, inclusiveMinTime, exclusiveMaxTime time.Time) error {
-	start := p.UnixNanoToDBTimestamp(inclusiveMinTime.UnixNano())
-	end := p.UnixNanoToDBTimestamp(exclusiveMaxTime.UnixNano())
+	start := persistence.UnixNanoToDBTimestamp(inclusiveMinTime.UnixNano())
+	end := persistence.UnixNanoToDBTimestamp(exclusiveMaxTime.UnixNano())
 	query := db.session.Query(templateRangeCompleteTimerTaskQuery,
 		shardID,
 		rowTypeTimerTask,
@@ -635,13 +643,14 @@ func (db *cdb) InsertReplicationDLQTask(ctx context.Context, shardID int, source
 		task.NextEventID,
 		task.Version,
 		task.ScheduledID,
-		p.EventStoreVersion,
+		persistence.EventStoreVersion,
 		task.BranchToken,
-		p.EventStoreVersion,
+		persistence.EventStoreVersion,
 		task.NewRunBranchToken,
 		defaultVisibilityTimestamp,
 		defaultVisibilityTimestamp,
 		task.TaskID,
+		db.timeSrc.Now(),
 	).WithContext(ctx)
 
 	return query.Exec()
@@ -718,11 +727,12 @@ func (db *cdb) InsertReplicationTask(ctx context.Context, tasks []*nosqlplugin.R
 
 	shardID := shardCondition.ShardID
 	batch := db.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
+	timeStamp := db.timeSrc.Now()
 	for _, task := range tasks {
-		createReplicationTasks(batch, shardID, task.DomainID, task.WorkflowID, []*nosqlplugin.ReplicationTask{task})
+		createReplicationTasks(batch, shardID, task.DomainID, task.WorkflowID, []*nosqlplugin.ReplicationTask{task}, timeStamp)
 	}
 
-	assertShardRangeID(batch, shardID, shardCondition.RangeID)
+	assertShardRangeID(batch, shardID, shardCondition.RangeID, timeStamp)
 
 	previous := make(map[string]interface{})
 	applied, iter, err := db.session.MapExecuteBatchCAS(batch, previous)

@@ -556,15 +556,64 @@ func taskInfoFromThrift(info *sqlblobs.TaskInfo) *TaskInfo {
 	}
 }
 
+func taskListPartitionConfigToThrift(info *TaskListPartitionConfig) *sqlblobs.TaskListPartitionConfig {
+	if info == nil {
+		return nil
+	}
+	return &sqlblobs.TaskListPartitionConfig{
+		Version:            &info.Version,
+		NumReadPartitions:  common.Int32Ptr(int32(len(info.ReadPartitions))),
+		NumWritePartitions: common.Int32Ptr(int32(len(info.WritePartitions))),
+		ReadPartitions:     taskListPartitionMapToThrift(info.ReadPartitions),
+		WritePartitions:    taskListPartitionMapToThrift(info.WritePartitions),
+	}
+}
+
+func taskListPartitionMapToThrift(m map[int32]*TaskListPartition) map[int32]*sqlblobs.TaskListPartition {
+	if m == nil {
+		return nil
+	}
+	result := make(map[int32]*sqlblobs.TaskListPartition)
+	for id, p := range m {
+		result[id] = &sqlblobs.TaskListPartition{IsolationGroups: p.IsolationGroups}
+	}
+	return result
+}
+
+func taskListPartitionMapFromThrift(m map[int32]*sqlblobs.TaskListPartition) map[int32]*TaskListPartition {
+	if m == nil {
+		return nil
+	}
+	result := make(map[int32]*TaskListPartition)
+	for id, p := range m {
+		result[id] = &TaskListPartition{IsolationGroups: p.IsolationGroups}
+	}
+	return result
+}
+
+func taskListParititionConfigFromThrift(info *sqlblobs.TaskListPartitionConfig) *TaskListPartitionConfig {
+	if info == nil {
+		return nil
+	}
+	return &TaskListPartitionConfig{
+		Version:            info.GetVersion(),
+		NumReadPartitions:  info.GetNumReadPartitions(),
+		NumWritePartitions: info.GetNumWritePartitions(),
+		ReadPartitions:     taskListPartitionMapFromThrift(info.ReadPartitions),
+		WritePartitions:    taskListPartitionMapFromThrift(info.WritePartitions),
+	}
+}
+
 func taskListInfoToThrift(info *TaskListInfo) *sqlblobs.TaskListInfo {
 	if info == nil {
 		return nil
 	}
 	return &sqlblobs.TaskListInfo{
-		Kind:             &info.Kind,
-		AckLevel:         &info.AckLevel,
-		ExpiryTimeNanos:  timeToUnixNanoPtr(info.ExpiryTimestamp),
-		LastUpdatedNanos: timeToUnixNanoPtr(info.LastUpdated),
+		Kind:                    &info.Kind,
+		AckLevel:                &info.AckLevel,
+		ExpiryTimeNanos:         timeToUnixNanoPtr(info.ExpiryTimestamp),
+		LastUpdatedNanos:        timeToUnixNanoPtr(info.LastUpdated),
+		AdaptivePartitionConfig: taskListPartitionConfigToThrift(info.AdaptivePartitionConfig),
 	}
 }
 
@@ -573,10 +622,11 @@ func taskListInfoFromThrift(info *sqlblobs.TaskListInfo) *TaskListInfo {
 		return nil
 	}
 	return &TaskListInfo{
-		Kind:            info.GetKind(),
-		AckLevel:        info.GetAckLevel(),
-		ExpiryTimestamp: timeFromUnixNano(info.GetExpiryTimeNanos()),
-		LastUpdated:     timeFromUnixNano(info.GetLastUpdatedNanos()),
+		Kind:                    info.GetKind(),
+		AckLevel:                info.GetAckLevel(),
+		ExpiryTimestamp:         timeFromUnixNano(info.GetExpiryTimeNanos()),
+		LastUpdated:             timeFromUnixNano(info.GetLastUpdatedNanos()),
+		AdaptivePartitionConfig: taskListParititionConfigFromThrift(info.AdaptivePartitionConfig),
 	}
 }
 

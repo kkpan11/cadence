@@ -186,6 +186,7 @@ var (
 		StartedTimestamp:          &Timestamp2,
 		Queries:                   WorkflowQueryMap,
 		NextEventID:               EventID3,
+		AutoConfigHint:            &AutoConfigHint,
 	}
 	RespondDecisionTaskCompletedRequest = types.RespondDecisionTaskCompletedRequest{
 		TaskToken:                  TaskToken,
@@ -232,6 +233,7 @@ var (
 		WorkflowType:                    &WorkflowType,
 		WorkflowDomain:                  DomainName,
 		Header:                          &Header,
+		AutoConfigHint:                  &AutoConfigHint,
 	}
 	RespondActivityTaskCompletedRequest = types.RespondActivityTaskCompletedRequest{
 		TaskToken: TaskToken,
@@ -320,6 +322,7 @@ var (
 		Memo:                                &Memo,
 		SearchAttributes:                    &SearchAttributes,
 		Header:                              &Header,
+		FirstRunAtTimeStamp:                 &Timestamp1,
 	}
 	StartWorkflowExecutionResponse = types.StartWorkflowExecutionResponse{
 		RunID: RunID,
@@ -356,6 +359,7 @@ var (
 		Memo:                                &Memo,
 		SearchAttributes:                    &SearchAttributes,
 		Header:                              &Header,
+		FirstRunAtTimestamp:                 &Timestamp1,
 	}
 	SignalWithStartWorkflowExecutionAsyncRequest = types.SignalWithStartWorkflowExecutionAsyncRequest{
 		SignalWithStartWorkflowExecutionRequest: &SignalWithStartWorkflowExecutionRequest,
@@ -391,6 +395,14 @@ var (
 		PendingChildren:        PendingChildExecutionInfoArray,
 		PendingDecision:        &PendingDecisionInfo,
 	}
+	DiagnoseWorkflowExecutionRequest = types.DiagnoseWorkflowExecutionRequest{
+		Domain:            DomainName,
+		WorkflowExecution: &WorkflowExecution,
+	}
+	DiagnoseWorkflowExecutionResponse = types.DiagnoseWorkflowExecutionResponse{
+		Domain:                      DomainName,
+		DiagnosticWorkflowExecution: &WorkflowExecution,
+	}
 	QueryWorkflowRequest = types.QueryWorkflowRequest{
 		Domain:                DomainName,
 		Execution:             &WorkflowExecution,
@@ -409,8 +421,9 @@ var (
 		IncludeTaskListStatus: true,
 	}
 	DescribeTaskListResponse = types.DescribeTaskListResponse{
-		Pollers:        PollerInfoArray,
-		TaskListStatus: &TaskListStatus,
+		Pollers:         PollerInfoArray,
+		TaskListStatus:  &TaskListStatus,
+		PartitionConfig: &TaskListPartitionConfig,
 	}
 	ListTaskListPartitionsRequest = types.ListTaskListPartitionsRequest{
 		Domain:   DomainName,

@@ -194,6 +194,14 @@ func (policy *selectedOrAllAPIsForwardingRedirectionPolicy) WithDomainIDRedirect
 	if err != nil {
 		return err
 	}
+	if domainEntry.IsDeprecatedOrDeleted() {
+		return &types.DomainNotActiveError{
+			Message:        "domain is deprecated.",
+			DomainName:     domainEntry.GetInfo().Name,
+			CurrentCluster: policy.currentClusterName,
+			ActiveCluster:  policy.currentClusterName,
+		}
+	}
 	return policy.withRedirect(ctx, domainEntry, apiName, call)
 }
 
@@ -202,6 +210,14 @@ func (policy *selectedOrAllAPIsForwardingRedirectionPolicy) WithDomainNameRedire
 	domainEntry, err := policy.domainCache.GetDomain(domainName)
 	if err != nil {
 		return err
+	}
+	if domainEntry.IsDeprecatedOrDeleted() {
+		return &types.DomainNotActiveError{
+			Message:        "domain is deprecated or deleted",
+			DomainName:     domainName,
+			CurrentCluster: policy.currentClusterName,
+			ActiveCluster:  policy.currentClusterName,
+		}
 	}
 	return policy.withRedirect(ctx, domainEntry, apiName, call)
 }

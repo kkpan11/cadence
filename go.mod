@@ -1,6 +1,8 @@
 module github.com/uber/cadence
 
-go 1.20
+go 1.22
+
+toolchain go1.23.4
 
 require (
 	github.com/MicahParks/keyfunc/v2 v2.1.0
@@ -38,12 +40,12 @@ require (
 	github.com/robfig/cron v1.2.0
 	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/startreedata/pinot-client-go v0.2.0 // latest release supports pinot v0.12.0 which is also internal version
-	github.com/stretchr/testify v1.8.3
+	github.com/stretchr/testify v1.9.0
 	github.com/uber-go/tally v3.3.15+incompatible
-	github.com/uber/cadence-idl v0.0.0-20240212223805-34b4519b2709
+	github.com/uber/cadence-idl v0.0.0-20241230191346-dcfe462b5c9c
 	github.com/uber/ringpop-go v0.8.5
 	github.com/uber/tchannel-go v1.22.2
-	github.com/urfave/cli v1.22.4
+	github.com/urfave/cli/v2 v2.27.4
 	github.com/valyala/fastjson v1.4.1
 	github.com/xdg/scram v0.0.0-20180814205039-7eeb5667e42c
 	github.com/xwb1989/sqlparser v0.0.0-20180606152119-120387863bf2
@@ -57,10 +59,10 @@ require (
 	go.uber.org/yarpc v1.70.3
 	go.uber.org/zap v1.13.0
 	golang.org/x/exp v0.0.0-20231226003508-02704c960a9b
-	golang.org/x/net v0.19.0
-	golang.org/x/sync v0.5.0
+	golang.org/x/net v0.26.0
+	golang.org/x/sync v0.7.0
 	golang.org/x/time v0.5.0
-	golang.org/x/tools v0.16.0
+	golang.org/x/tools v0.22.0
 	gonum.org/v1/gonum v0.7.0
 	google.golang.org/grpc v1.59.0
 	gopkg.in/validator.v2 v2.0.0-20180514200540-135c24b11c19
@@ -68,13 +70,21 @@ require (
 )
 
 require (
-	github.com/BurntSushi/toml v0.4.1 // indirect
+	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568
+	github.com/google/gofuzz v1.0.0
+	go.uber.org/mock v0.5.0
+)
+
+require github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
+
+require (
+	github.com/BurntSushi/toml v1.3.2 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20161002113705-648efa622239 // indirect
-	github.com/apache/thrift v0.16.0 // indirect
+	github.com/apache/thrift v0.17.0 // indirect
 	github.com/benbjohnson/clock v0.0.0-20161215174838-7dc76406b6d3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
-	github.com/cpuguy83/go-md2man/v2 v2.0.0 // indirect
+	github.com/cpuguy83/go-md2man/v2 v2.0.4 // indirect
 	github.com/cristalhq/jwt/v3 v3.1.0 // indirect
 	github.com/eapache/go-resiliency v1.2.0 // indirect
 	github.com/eapache/go-xerial-snappy v0.0.0-20180814174437-776d5712da21 // indirect
@@ -87,7 +97,7 @@ require (
 	github.com/gogo/status v1.1.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
+	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-uuid v1.0.2 // indirect
@@ -117,9 +127,8 @@ require (
 	github.com/prometheus/common v0.26.0 // indirect
 	github.com/prometheus/procfs v0.6.0 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20201227073835-cf1acfcdf475 // indirect
-	github.com/russross/blackfriday/v2 v2.0.1 // indirect
-	github.com/shurcooL/sanitized_anchor_name v1.0.0 // indirect
-	github.com/stretchr/objx v0.5.0 // indirect
+	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/uber-common/bark v1.2.1 // indirect
 	github.com/uber-go/mapdecode v1.0.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
@@ -128,13 +137,14 @@ require (
 	github.com/xdg/stringprep v1.0.0 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
 	go.uber.org/dig v1.10.0 // indirect
+	go.uber.org/goleak v1.0.0
 	go.uber.org/net/metrics v1.3.0 // indirect
-	golang.org/x/crypto v0.16.0 // indirect
+	golang.org/x/crypto v0.24.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20220218215828-6cf2b201936e // indirect
 	golang.org/x/lint v0.0.0-20210508222113-6edffad5e616 // indirect
-	golang.org/x/mod v0.14.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/mod v0.18.0 // indirect
+	golang.org/x/sys v0.21.0 // indirect
+	golang.org/x/text v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20231030173426-d783a09b4405 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

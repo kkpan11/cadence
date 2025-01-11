@@ -21,6 +21,8 @@
 package testing
 
 import (
+	"testing"
+
 	"github.com/pborman/uuid"
 
 	"github.com/uber/cadence/common"
@@ -33,6 +35,7 @@ import (
 
 // StartWorkflow setup a workflow for testing purpose
 func StartWorkflow(
+	t *testing.T,
 	mockShard *shard.TestContext,
 	sourceDomainID string,
 ) (types.WorkflowExecution, execution.MutableState, error) {
@@ -64,6 +67,11 @@ func StartWorkflow(
 				TaskList:                            &types.TaskList{Name: taskListName},
 				ExecutionStartToCloseTimeoutSeconds: common.Int32Ptr(2),
 				TaskStartToCloseTimeoutSeconds:      common.Int32Ptr(1),
+				Header: &types.Header{Fields: map[string][]byte{
+					"context-key":         []byte("contextValue"),
+					"123456":              []byte("123456"), // unsanitizable key
+					"invalid-context-key": []byte("invalidContextValue"),
+				}},
 			},
 			PartitionConfig: map[string]string{"userid": uuid.New()},
 		},
@@ -77,10 +85,11 @@ func StartWorkflow(
 
 // SetupWorkflowWithCompletedDecision setup a workflow with a completed decision task for testing purpose
 func SetupWorkflowWithCompletedDecision(
+	t *testing.T,
 	mockShard *shard.TestContext,
 	sourceDomainID string,
 ) (types.WorkflowExecution, execution.MutableState, int64, error) {
-	workflowExecution, mutableState, err := StartWorkflow(mockShard, sourceDomainID)
+	workflowExecution, mutableState, err := StartWorkflow(t, mockShard, sourceDomainID)
 	if err != nil {
 		return types.WorkflowExecution{}, nil, 0, err
 	}
@@ -96,6 +105,7 @@ func SetupWorkflowWithCompletedDecision(
 // CreatePersistenceMutableState generated a persistence representation of the mutable state
 // a based on the in memory version
 func CreatePersistenceMutableState(
+	t *testing.T,
 	ms execution.MutableState,
 	lastEventID int64,
 	lastEventVersion int64,
@@ -116,5 +126,5 @@ func CreatePersistenceMutableState(
 		}
 	}
 
-	return execution.CreatePersistenceMutableState(ms), nil
+	return execution.CreatePersistenceMutableState(t, ms), nil
 }

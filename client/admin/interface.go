@@ -34,6 +34,7 @@ import (
 //go:generate gowrap gen -g -p . -i Client -t ../templates/errorinjectors.tmpl -o ../wrappers/errorinjectors/admin_generated.go -v client=Admin
 //go:generate gowrap gen -g -p . -i Client -t ../templates/grpc.tmpl -o ../wrappers/grpc/admin_generated.go -v client=Admin -v package=adminv1 -v path=github.com/uber/cadence-idl/go/proto/admin/v1 -v prefix=Admin
 //go:generate gowrap gen -g -p . -i Client -t ../templates/thrift.tmpl -o ../wrappers/thrift/admin_generated.go -v client=Admin -v prefix=Admin
+//go:generate gowrap gen -g -p . -i Client -t ../templates/timeout.tmpl -o ../wrappers/timeout/admin_generated.go -v client=Admin
 
 // Client is the interface exposed by admin service client
 type Client interface {
@@ -57,8 +58,6 @@ type Client interface {
 	RemoveTask(context.Context, *types.RemoveTaskRequest, ...yarpc.CallOption) error
 	ResendReplicationTasks(context.Context, *types.ResendReplicationTasksRequest, ...yarpc.CallOption) error
 	ResetQueue(context.Context, *types.ResetQueueRequest, ...yarpc.CallOption) error
-	GetCrossClusterTasks(context.Context, *types.GetCrossClusterTasksRequest, ...yarpc.CallOption) (*types.GetCrossClusterTasksResponse, error)
-	RespondCrossClusterTasksCompleted(context.Context, *types.RespondCrossClusterTasksCompletedRequest, ...yarpc.CallOption) (*types.RespondCrossClusterTasksCompletedResponse, error)
 	GetDynamicConfig(context.Context, *types.GetDynamicConfigRequest, ...yarpc.CallOption) (*types.GetDynamicConfigResponse, error)
 	UpdateDynamicConfig(context.Context, *types.UpdateDynamicConfigRequest, ...yarpc.CallOption) error
 	RestoreDynamicConfig(context.Context, *types.RestoreDynamicConfigRequest, ...yarpc.CallOption) error
@@ -71,4 +70,5 @@ type Client interface {
 	UpdateDomainIsolationGroups(ctx context.Context, request *types.UpdateDomainIsolationGroupsRequest, opts ...yarpc.CallOption) (*types.UpdateDomainIsolationGroupsResponse, error)
 	GetDomainAsyncWorkflowConfiguraton(ctx context.Context, request *types.GetDomainAsyncWorkflowConfiguratonRequest, opts ...yarpc.CallOption) (*types.GetDomainAsyncWorkflowConfiguratonResponse, error)
 	UpdateDomainAsyncWorkflowConfiguraton(ctx context.Context, request *types.UpdateDomainAsyncWorkflowConfiguratonRequest, opts ...yarpc.CallOption) (*types.UpdateDomainAsyncWorkflowConfiguratonResponse, error)
+	UpdateTaskListPartitionConfig(ctx context.Context, request *types.UpdateTaskListPartitionConfigRequest, opts ...yarpc.CallOption) (*types.UpdateTaskListPartitionConfigResponse, error)
 }

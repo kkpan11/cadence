@@ -25,10 +25,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/persistence"
@@ -74,6 +74,15 @@ func TestUpdateHelper(t *testing.T) {
 			mockSetupFn: func(mockContext *execution.MockContext, mockMutableState *execution.MockMutableState) {
 				mockContext.EXPECT().UpdateWorkflowExecutionAsActive(gomock.Any(), gomock.Any()).Return(execution.NewConflictError(t, assert.AnError)).Times(ConditionalRetryCount - 1)
 				mockContext.EXPECT().UpdateWorkflowExecutionAsActive(gomock.Any(), gomock.Any()).Return(nil).Times(1)
+			},
+			actionFn: func(context execution.Context, mutableState execution.MutableState) (*UpdateAction, error) {
+				return UpdateWithoutDecision, nil
+			},
+		},
+		{
+			msg: "duplicate request",
+			mockSetupFn: func(mockContext *execution.MockContext, mockMutableState *execution.MockMutableState) {
+				mockContext.EXPECT().UpdateWorkflowExecutionAsActive(gomock.Any(), gomock.Any()).Return(&persistence.DuplicateRequestError{})
 			},
 			actionFn: func(context execution.Context, mutableState execution.MutableState) (*UpdateAction, error) {
 				return UpdateWithoutDecision, nil

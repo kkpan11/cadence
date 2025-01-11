@@ -88,6 +88,8 @@ type (
 		ESConfig          *config.ElasticSearchConfig
 		PinotConfig       *config.PinotVisibilityConfig
 		PinotClient       pinot.GenericClient
+		OSClient          es.GenericClient
+		OSConfig          *config.ElasticSearchConfig
 	}
 )
 
@@ -96,7 +98,7 @@ func NewBeanFromFactory(
 	factory Factory,
 	params *Params,
 	serviceConfig *service.Config,
-) (*BeanImpl, error) {
+) (Bean, error) {
 
 	metadataMgr, err := factory.NewDomainManager()
 	if err != nil {
@@ -368,6 +370,7 @@ func (s *BeanImpl) Close() {
 	s.shardManager.Close()
 	s.historyManager.Close()
 	s.executionManagerFactory.Close()
+	s.configStoreManager.Close()
 	for _, executionMgr := range s.shardIDToExecutionManager {
 		executionMgr.Close()
 	}

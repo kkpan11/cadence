@@ -23,7 +23,6 @@ package host
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"testing"
 	"time"
@@ -58,6 +57,7 @@ type (
 		adminClient              AdminClient
 		Logger                   log.Logger
 		domainName               string
+		secondaryDomainName      string
 		testRawHistoryDomainName string
 		foreignDomainName        string
 		archivalDomainName       string
@@ -147,7 +147,9 @@ func (s *IntegrationBase) setupLogger() {
 
 // GetTestClusterConfig return test cluster config
 func GetTestClusterConfig(configFile string) (*TestClusterConfig, error) {
-	environment.SetupEnv()
+	if err := environment.SetupEnv(); err != nil {
+		return nil, err
+	}
 
 	configLocation := configFile
 	if TestFlags.TestClusterConfigFile != "" {
@@ -155,7 +157,7 @@ func GetTestClusterConfig(configFile string) (*TestClusterConfig, error) {
 	}
 	// This is just reading a config so it's less of a security concern
 	// #nosec
-	confContent, err := ioutil.ReadFile(configLocation)
+	confContent, err := os.ReadFile(configLocation)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read test cluster config file %v: %v", configLocation, err)
 	}
@@ -177,14 +179,16 @@ func GetTestClusterConfig(configFile string) (*TestClusterConfig, error) {
 
 // GetTestClusterConfigs return test cluster configs
 func GetTestClusterConfigs(configFile string) ([]*TestClusterConfig, error) {
-	environment.SetupEnv()
+	if err := environment.SetupEnv(); err != nil {
+		return nil, err
+	}
 
 	fileName := configFile
 	if TestFlags.TestClusterConfigFile != "" {
 		fileName = TestFlags.TestClusterConfigFile
 	}
 
-	confContent, err := ioutil.ReadFile(fileName)
+	confContent, err := os.ReadFile(fileName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read test cluster config file %v: %v", fileName, err)
 	}

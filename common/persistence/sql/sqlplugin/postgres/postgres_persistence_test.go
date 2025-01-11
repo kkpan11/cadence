@@ -23,6 +23,7 @@ package postgres
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 
 	pt "github.com/uber/cadence/common/persistence/persistence-tests"
@@ -32,7 +33,9 @@ import (
 func TestPostgresSQLHistoryV2PersistenceSuite(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.HistoryV2PersistenceSuite)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
@@ -40,7 +43,9 @@ func TestPostgresSQLHistoryV2PersistenceSuite(t *testing.T) {
 func TestPostgresSQLMatchingPersistenceSuite(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.MatchingPersistenceSuite)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
@@ -48,7 +53,9 @@ func TestPostgresSQLMatchingPersistenceSuite(t *testing.T) {
 func TestPostgresSQLMetadataPersistenceSuiteV2(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.MetadataPersistenceSuiteV2)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
@@ -56,15 +63,31 @@ func TestPostgresSQLMetadataPersistenceSuiteV2(t *testing.T) {
 func TestPostgresSQLShardPersistenceSuite(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.ShardPersistenceSuite)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
 
+type ExecutionManagerSuite struct {
+	pt.ExecutionManagerSuite
+}
+
+func (s *ExecutionManagerSuite) TestCreateWorkflowExecutionWithWorkflowRequestsDedup() {
+	s.T().Skip("skip the test until we store workflow_request in postgres sql")
+}
+
+func (s *ExecutionManagerSuite) TestUpdateWorkflowExecutionWithWorkflowRequestsDedup() {
+	s.T().Skip("skip the test until we store workflow_request in postgres sql")
+}
+
 func TestPostgresSQLExecutionManagerSuite(t *testing.T) {
 	testflags.RequirePostgres(t)
-	s := new(pt.ExecutionManagerSuite)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	s := new(ExecutionManagerSuite)
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
@@ -72,7 +95,9 @@ func TestPostgresSQLExecutionManagerSuite(t *testing.T) {
 func TestPostgresSQLExecutionManagerWithEventsV2(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.ExecutionManagerSuiteForEventsV2)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	option, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, option)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
@@ -80,7 +105,9 @@ func TestPostgresSQLExecutionManagerWithEventsV2(t *testing.T) {
 func TestPostgresSQLVisibilityPersistenceSuite(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.DBVisibilityPersistenceSuite)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }
@@ -96,17 +123,19 @@ FAIL: TestPostgresSQLQueuePersistence/TestDomainReplicationQueue (0.26s)
             	            	actual  : 98
             	Test:       	TestPostgresSQLQueuePersistence/TestDomainReplicationQueue
 */
-//func TestPostgresSQLQueuePersistence(t *testing.T) {
+// func TestPostgresSQLQueuePersistence(t *testing.T) {
 //	s := new(pt.QueuePersistenceSuite)
 //	s.TestBase = pt.NewTestBaseWithSQL(GetTestClusterOption())
 //	s.TestBase.Setup()
 //	suite.Run(t, s)
-//}
+// }
 
 func TestPostgresSQLConfigPersistence(t *testing.T) {
 	testflags.RequirePostgres(t)
 	s := new(pt.ConfigStorePersistenceSuite)
-	s.TestBase = pt.NewTestBaseWithSQL(t, GetTestClusterOption())
+	options, err := GetTestClusterOption()
+	assert.NoError(t, err)
+	s.TestBase = pt.NewTestBaseWithSQL(t, options)
 	s.TestBase.Setup()
 	suite.Run(t, s)
 }

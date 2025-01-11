@@ -26,10 +26,10 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/cluster"
 	"github.com/uber/cadence/common/persistence"
@@ -264,6 +264,7 @@ func (s *workflowSuite) TestSuppressWorkflowBy_Terminate() {
 		"",
 		"",
 		int64(0),
+		"",
 	).Return(&types.HistoryEvent{}, nil).Times(1)
 	s.mockMutableState.EXPECT().FlushBufferedEvents().Return(nil).Times(1)
 
@@ -398,7 +399,7 @@ func (s *workflowSuite) TestFlushBufferedEvents_Success() {
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(&persistence.WorkflowExecutionInfo{LastEventTaskID: lastEventTaskID})
 	s.mockMutableState.EXPECT().UpdateCurrentVersion(lastWriteVersion, true).Return(nil)
 	s.mockMutableState.EXPECT().GetInFlightDecision().Return(decision, true)
-	s.mockMutableState.EXPECT().AddDecisionTaskFailedEvent(decision.ScheduleID, decision.StartedID, types.DecisionTaskFailedCauseFailoverCloseDecision, nil, IdentityHistoryService, "", "", "", "", int64(0)).Return(&types.HistoryEvent{}, nil)
+	s.mockMutableState.EXPECT().AddDecisionTaskFailedEvent(decision.ScheduleID, decision.StartedID, types.DecisionTaskFailedCauseFailoverCloseDecision, nil, IdentityHistoryService, "", "", "", "", int64(0), "").Return(&types.HistoryEvent{}, nil)
 	s.mockMutableState.EXPECT().FlushBufferedEvents().Return(nil)
 	s.mockMutableState.EXPECT().HasPendingDecision().Return(false)
 	s.mockMutableState.EXPECT().AddDecisionTaskScheduledEvent(false).Return(&DecisionInfo{}, nil)

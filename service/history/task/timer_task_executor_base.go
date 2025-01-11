@@ -45,22 +45,25 @@ type (
 	timerTaskExecutorBase struct {
 		shard          shard.Context
 		archiverClient archiver.Client
-		executionCache *execution.Cache
+		executionCache execution.Cache
 		logger         log.Logger
 		metricsClient  metrics.Client
 		config         *config.Config
 		throttleRetry  *backoff.ThrottleRetry
+		ctx            context.Context
+		cancelFn       context.CancelFunc
 	}
 )
 
 func newTimerTaskExecutorBase(
 	shard shard.Context,
 	archiverClient archiver.Client,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	logger log.Logger,
 	metricsClient metrics.Client,
 	config *config.Config,
 ) *timerTaskExecutorBase {
+	ctx, cancelFn := context.WithCancel(context.Background())
 	return &timerTaskExecutorBase{
 		shard:          shard,
 		archiverClient: archiverClient,
@@ -72,6 +75,8 @@ func newTimerTaskExecutorBase(
 			backoff.WithRetryPolicy(taskRetryPolicy),
 			backoff.WithRetryableError(persistence.IsTransientError),
 		),
+		ctx:      ctx,
+		cancelFn: cancelFn,
 	}
 }
 
@@ -132,14 +137,6 @@ func (t *timerTaskExecutorBase) deleteWorkflow(
 	msBuilder execution.MutableState,
 ) error {
 
-	if err := t.deleteCurrentWorkflowExecution(ctx, task); err != nil {
-		return err
-	}
-
-	if err := t.deleteWorkflowExecution(ctx, task); err != nil {
-		return err
-	}
-
 	if err := t.deleteWorkflowHistory(ctx, task, msBuilder); err != nil {
 		return err
 	}
@@ -147,6 +144,16 @@ func (t *timerTaskExecutorBase) deleteWorkflow(
 	if err := t.deleteWorkflowVisibility(ctx, task); err != nil {
 		return err
 	}
+
+	if err := t.deleteCurrentWorkflowExecution(ctx, task); err != nil {
+		return err
+	}
+
+	// it must be the last one due to the nature of workflow execution deletion
+	if err := t.deleteWorkflowExecution(ctx, task); err != nil {
+		return err
+	}
+
 	// calling clear here to force accesses of mutable state to read database
 	// if this is not called then callers will get mutable state even though its been removed from database
 	context.Clear()
@@ -197,12 +204,6 @@ func (t *timerTaskExecutorBase) archiveWorkflow(
 		return err
 	}
 
-	if err := t.deleteCurrentWorkflowExecution(ctx, task); err != nil {
-		return err
-	}
-	if err := t.deleteWorkflowExecution(ctx, task); err != nil {
-		return err
-	}
 	// delete workflow history if history archival is not needed or history as been archived inline
 	if resp.HistoryArchivedInline {
 		t.metricsClient.IncCounter(metrics.HistoryProcessDeleteHistoryEventScope, metrics.WorkflowCleanupDeleteHistoryInlineCount)
@@ -213,6 +214,13 @@ func (t *timerTaskExecutorBase) archiveWorkflow(
 	// delete visibility record here regardless if it's been archived inline or not
 	// since the entire record is included as part of the archive request.
 	if err := t.deleteWorkflowVisibility(ctx, task); err != nil {
+		return err
+	}
+
+	if err := t.deleteCurrentWorkflowExecution(ctx, task); err != nil {
+		return err
+	}
+	if err := t.deleteWorkflowExecution(ctx, task); err != nil {
 		return err
 	}
 	// calling clear here to force accesses of mutable state to read database
@@ -305,4 +313,9 @@ func (t *timerTaskExecutorBase) deleteWorkflowVisibility(
 		return t.shard.GetService().GetVisibilityManager().DeleteWorkflowExecution(ctx, request) // delete from db
 	}
 	return t.throttleRetry.Do(ctx, op)
+}
+
+func (t *timerTaskExecutorBase) Stop() {
+	t.logger.Info("Stopping timerTaskExecutorBase")
+	t.cancelFn()
 }

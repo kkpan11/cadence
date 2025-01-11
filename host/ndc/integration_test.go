@@ -28,10 +28,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 	"go.uber.org/yarpc"
 
 	adminClient "github.com/uber/cadence/client/admin"
@@ -86,25 +86,11 @@ func (s *NDCIntegrationTestSuite) SetupSuite() {
 	controller := gomock.NewController(s.T())
 	mockStandbyClient := adminClient.NewMockClient(controller)
 	mockStandbyClient.EXPECT().GetReplicationMessages(gomock.Any(), gomock.Any()).DoAndReturn(s.GetReplicationMessagesMock).AnyTimes()
-	mockStandbyClient.EXPECT().GetCrossClusterTasks(gomock.Any(), gomock.Any()).Return(
-		&types.GetCrossClusterTasksResponse{
-			TasksByShard:       make(map[int32][]*types.CrossClusterTaskRequest),
-			FailedCauseByShard: make(map[int32]types.GetTaskFailedCause),
-		},
-		nil,
-	).AnyTimes()
 	mockOtherClient := adminClient.NewMockClient(controller)
 	mockOtherClient.EXPECT().GetReplicationMessages(gomock.Any(), gomock.Any()).Return(
 		&types.GetReplicationMessagesResponse{
 			MessagesByShard: make(map[int32]*types.ReplicationMessages),
 		}, nil).AnyTimes()
-	mockOtherClient.EXPECT().GetCrossClusterTasks(gomock.Any(), gomock.Any()).Return(
-		&types.GetCrossClusterTasksResponse{
-			TasksByShard:       make(map[int32][]*types.CrossClusterTaskRequest),
-			FailedCauseByShard: make(map[int32]types.GetTaskFailedCause),
-		},
-		nil,
-	).AnyTimes()
 	s.mockAdminClient["standby"] = mockStandbyClient
 	s.mockAdminClient["other"] = mockOtherClient
 	s.clusterConfigs[0].MockAdminClient = s.mockAdminClient

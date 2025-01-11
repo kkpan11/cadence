@@ -30,6 +30,7 @@ import (
 	"github.com/uber/cadence/common/cache"
 	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/dynamicconfig"
+	cadence_errors "github.com/uber/cadence/common/errors"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/metrics"
@@ -260,6 +261,25 @@ func (t *taskImpl) HandleErr(err error) (retErr error) {
 		return err
 	}
 
+	if err == errWorkflowRateLimited {
+		// metrics are emitted within the rate limiter
+		return err
+	}
+
+	// If the shard were recently closed we just return an error, so we retry in a bit.
+	var errShardClosed *shard.ErrShardClosed
+	if errors.As(err, &errShardClosed) && time.Since(errShardClosed.ClosedAt) < shard.TimeBeforeShardClosedIsError {
+		return err
+	}
+
+	// If the task list is not owned by the host we connected to we just return an error, so we retry in a bit
+	// with the new membership information.
+	var taskListNotOwnedByHostError *cadence_errors.TaskListNotOwnedByHostError
+	if errors.As(err, &taskListNotOwnedByHostError) {
+		t.scope.IncCounter(metrics.TaskListNotOwnedByHostCounterPerDomain)
+		return err
+	}
+
 	// this is a transient error
 	if isRedispatchErr(err) {
 		t.scope.IncCounter(metrics.TaskStandbyRetryCounterPerDomain)
@@ -283,20 +303,14 @@ func (t *taskImpl) HandleErr(err error) (retErr error) {
 		err = nil
 	}
 
-	// target domain not active error, we should retry the task
-	// so that a cross-cluster task can be created.
-	if err == errTargetDomainNotActive {
-		t.scope.IncCounter(metrics.TaskTargetNotActiveCounterPerDomain)
-		t.logger.Error("Dropping 'domain-not-active' error as non-retriable", tag.Error(err))
-		return nil
-	}
-
-	// this is a transient error, and means source domain not active
-	// TODO remove this error check special case
-	// since the new task life cycle will not give up until task processed / verified
-	if _, ok := err.(*types.DomainNotActiveError); ok {
-		if t.timeSource.Now().Sub(t.submitTime) > 2*cache.DomainCacheRefreshInterval {
+	// using a fairly long timeout here because domain updates is an async process
+	// which could take a fair while to be processed by the domain queue, the DB updated
+	// the domain cache refeshed and then updated here.
+	var e *types.DomainNotActiveError
+	if errors.As(err, &e) || errors.Is(err, types.DomainNotActiveError{}) {
+		if t.timeSource.Now().Sub(t.submitTime) > 5*cache.DomainCacheRefreshInterval {
 			t.scope.IncCounter(metrics.TaskNotActiveCounterPerDomain)
+			// If the domain is *still* not active, drop after a while.
 			return nil
 		}
 
@@ -322,7 +336,8 @@ func (t *taskImpl) HandleErr(err error) (retErr error) {
 }
 
 func (t *taskImpl) RetryErr(err error) bool {
-	if err == errWorkflowBusy || isRedispatchErr(err) || err == ErrTaskPendingActive || common.IsContextTimeoutError(err) {
+	var errShardClosed *shard.ErrShardClosed
+	if errors.As(err, &errShardClosed) || err == errWorkflowBusy || isRedispatchErr(err) || err == ErrTaskPendingActive || common.IsContextTimeoutError(err) {
 		return false
 	}
 
@@ -340,6 +355,7 @@ func (t *taskImpl) Ack() {
 		t.scope.RecordTimer(metrics.TaskAttemptTimerPerDomain, time.Duration(t.attempt))
 		t.scope.RecordTimer(metrics.TaskLatencyPerDomain, time.Since(t.submitTime))
 		t.scope.RecordTimer(metrics.TaskQueueLatencyPerDomain, time.Since(t.GetVisibilityTimestamp()))
+
 	}
 
 	if t.eventLogger != nil && t.shouldProcessTask && t.attempt != 0 {

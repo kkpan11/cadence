@@ -22,6 +22,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -59,12 +60,14 @@ type timerQueueProcessor struct {
 	shutdownChan chan struct{}
 	shutdownWG   sync.WaitGroup
 
-	ackLevel               time.Time
-	taskAllocator          TaskAllocator
-	activeTaskExecutor     task.Executor
-	activeQueueProcessor   *timerQueueProcessorBase
-	standbyQueueProcessors map[string]*timerQueueProcessorBase
-	standbyQueueTimerGates map[string]RemoteTimerGate
+	ackLevel                time.Time
+	taskAllocator           TaskAllocator
+	activeTaskExecutor      task.Executor
+	activeQueueProcessor    *timerQueueProcessorBase
+	standbyQueueProcessors  map[string]*timerQueueProcessorBase
+	standbyTaskExecutors    []task.Executor
+	standbyQueueTimerGates  map[string]RemoteTimerGate
+	failoverQueueProcessors []*timerQueueProcessorBase
 }
 
 // NewTimerQueueProcessor creates a new timer QueueProcessor
@@ -72,7 +75,7 @@ func NewTimerQueueProcessor(
 	shard shard.Context,
 	historyEngine engine.Engine,
 	taskProcessor task.Processor,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	archivalClient archiver.Client,
 	executionCheck invariant.Invariant,
 ) Processor {
@@ -100,6 +103,7 @@ func NewTimerQueueProcessor(
 		logger,
 	)
 
+	standbyTaskExecutors := make([]task.Executor, 0, len(shard.GetClusterMetadata().GetRemoteClusterInfo()))
 	standbyQueueProcessors := make(map[string]*timerQueueProcessorBase)
 	standbyQueueTimerGates := make(map[string]RemoteTimerGate)
 	for clusterName := range shard.GetClusterMetadata().GetRemoteClusterInfo() {
@@ -123,6 +127,7 @@ func NewTimerQueueProcessor(
 			clusterName,
 			config,
 		)
+		standbyTaskExecutors = append(standbyTaskExecutors, standbyTaskExecutor)
 		standbyQueueProcessors[clusterName], standbyQueueTimerGates[clusterName] = newTimerQueueStandbyProcessor(
 			clusterName,
 			shard,
@@ -154,6 +159,7 @@ func NewTimerQueueProcessor(
 		activeQueueProcessor:   activeQueueProcessor,
 		standbyQueueProcessors: standbyQueueProcessors,
 		standbyQueueTimerGates: standbyQueueTimerGates,
+		standbyTaskExecutors:   standbyTaskExecutors,
 	}
 }
 
@@ -178,8 +184,15 @@ func (t *timerQueueProcessor) Stop() {
 
 	if !t.shard.GetConfig().QueueProcessorEnableGracefulSyncShutdown() {
 		t.activeQueueProcessor.Stop()
+		// stop active executor after queue processor
+		t.activeTaskExecutor.Stop()
 		for _, standbyQueueProcessor := range t.standbyQueueProcessors {
 			standbyQueueProcessor.Stop()
+		}
+
+		// stop standby executors after queue processors
+		for _, standbyTaskExecutor := range t.standbyTaskExecutors {
+			standbyTaskExecutor.Stop()
 		}
 
 		close(t.shutdownChan)
@@ -194,9 +207,24 @@ func (t *timerQueueProcessor) Stop() {
 		t.logger.Warn("transferQueueProcessor timed out on shut down", tag.LifeCycleStopTimedout)
 	}
 	t.activeQueueProcessor.Stop()
+
 	for _, standbyQueueProcessor := range t.standbyQueueProcessors {
 		standbyQueueProcessor.Stop()
 	}
+
+	// stop standby executors after queue processors
+	for _, standbyTaskExecutor := range t.standbyTaskExecutors {
+		standbyTaskExecutor.Stop()
+	}
+
+	if len(t.failoverQueueProcessors) > 0 {
+		t.logger.Info("Shutting down failover timer queues", tag.Counter(len(t.failoverQueueProcessors)))
+		for _, failoverQueueProcessor := range t.failoverQueueProcessors {
+			failoverQueueProcessor.Stop()
+		}
+	}
+
+	t.activeTaskExecutor.Stop()
 }
 
 func (t *timerQueueProcessor) NotifyNewTask(clusterName string, info *hcommon.NotifyTaskInfo) {
@@ -282,7 +310,6 @@ func (t *timerQueueProcessor) FailoverDomain(domainIDs map[string]struct{}) {
 	updateClusterAckLevelFn, failoverQueueProcessor := newTimerQueueFailoverProcessor(
 		standbyClusterName,
 		t.shard,
-		t.historyEngine,
 		t.taskProcessor,
 		t.taskAllocator,
 		t.activeTaskExecutor,
@@ -298,6 +325,12 @@ func (t *timerQueueProcessor) FailoverDomain(domainIDs map[string]struct{}) {
 	if err != nil {
 		t.logger.Error("Error update shard ack level", tag.Error(err))
 	}
+
+	// Failover queue processors are started on the fly when domains are failed over.
+	// Failover queue processors will be stopped when the timer queue instance is stopped (due to restart or shard movement).
+	// This means the failover queue processor might not finish its job.
+	// There is no mechanism to re-start ongoing failover queue processors in the new shard owner.
+	t.failoverQueueProcessors = append(t.failoverQueueProcessors, failoverQueueProcessor)
 	failoverQueueProcessor.Start()
 }
 
@@ -349,7 +382,7 @@ func (t *timerQueueProcessor) UnlockTaskProcessing() {
 func (t *timerQueueProcessor) drain() {
 	if !t.shard.GetConfig().QueueProcessorEnableGracefulSyncShutdown() {
 		if err := t.completeTimer(context.Background()); err != nil {
-			t.logger.Error("Failed to complete timer task during shutdown", tag.Error(err))
+			t.logger.Error("Failed to complete timer task during drain", tag.Error(err))
 		}
 		return
 	}
@@ -358,7 +391,7 @@ func (t *timerQueueProcessor) drain() {
 	ctx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 	defer cancel()
 	if err := t.completeTimer(ctx); err != nil {
-		t.logger.Error("Failed to complete timer task during shutdown", tag.Error(err))
+		t.logger.Error("Failed to complete timer task during drain", tag.Error(err))
 	}
 }
 
@@ -368,6 +401,13 @@ func (t *timerQueueProcessor) completeTimerLoop() {
 	completeTimer := time.NewTimer(t.config.TimerProcessorCompleteTimerInterval())
 	defer completeTimer.Stop()
 
+	// Create a retryTimer once, and reset it as needed
+	retryTimer := time.NewTimer(0)
+	defer retryTimer.Stop()
+	// Stop it immediately because we don't want it to fire initially
+	if !retryTimer.Stop() {
+		<-retryTimer.C
+	}
 	for {
 		select {
 		case <-t.shutdownChan:
@@ -381,7 +421,8 @@ func (t *timerQueueProcessor) completeTimerLoop() {
 				}
 
 				t.logger.Error("Failed to complete timer task", tag.Error(err))
-				if err == shard.ErrShardClosed {
+				var errShardClosed *shard.ErrShardClosed
+				if errors.As(err, &errShardClosed) {
 					if !t.shard.GetConfig().QueueProcessorEnableGracefulSyncShutdown() {
 						go t.Stop()
 						return
@@ -391,11 +432,15 @@ func (t *timerQueueProcessor) completeTimerLoop() {
 					return
 				}
 
+				// Reset the retryTimer for the delay between attempts
+				// TODO: the first retry has 0 backoff, revisit it to see if it's expected
+				retryDuration := time.Duration(attempt*100) * time.Millisecond
+				retryTimer.Reset(retryDuration)
 				select {
 				case <-t.shutdownChan:
 					t.drain()
 					return
-				case <-time.After(time.Duration(attempt*100) * time.Millisecond):
+				case <-retryTimer.C:
 					// do nothing. retry loop will continue
 				}
 			}

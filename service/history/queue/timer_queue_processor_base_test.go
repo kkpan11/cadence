@@ -25,12 +25,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/uber-go/tally"
+	"go.uber.org/goleak"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/cluster"
 	"github.com/uber/cadence/common/dynamicconfig"
@@ -93,10 +94,15 @@ func (s *timerQueueProcessorBaseSuite) SetupTest() {
 func (s *timerQueueProcessorBaseSuite) TearDownTest() {
 	s.controller.Finish()
 	s.mockShard.Finish(s.T())
+	defer goleak.VerifyNone(s.T(),
+		// TODO(CDNC-8881):  TimerGate should not start background goroutine in constructor. Make it start/stoppable
+		goleak.IgnoreTopFunction("github.com/uber/cadence/service/history/queue.NewLocalTimerGate.func1"),
+	)
 }
 
 func (s *timerQueueProcessorBaseSuite) TestIsProcessNow() {
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	s.True(timerQueueProcessBase.isProcessNow(time.Time{}))
 
 	now := s.mockShard.GetCurrentTime(s.clusterName)
@@ -107,6 +113,7 @@ func (s *timerQueueProcessorBaseSuite) TestIsProcessNow() {
 
 	timeAfter := now.Add(10 * time.Second)
 	s.False(timerQueueProcessBase.isProcessNow(timeAfter))
+
 }
 
 func (s *timerQueueProcessorBaseSuite) TestGetTimerTasks_More() {
@@ -141,7 +148,8 @@ func (s *timerQueueProcessorBaseSuite) TestGetTimerTasks_More() {
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.getTimerTasks(readLevel, maxReadLevel, request.NextPageToken, batchSize)
 	s.Nil(err)
 	s.Equal(response.Timers, got.Timers)
@@ -180,7 +188,8 @@ func (s *timerQueueProcessorBaseSuite) TestGetTimerTasks_NoMore() {
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.getTimerTasks(readLevel, maxReadLevel, request.NextPageToken, batchSize)
 	s.Nil(err)
 	s.Equal(response.Timers, got.Timers)
@@ -220,7 +229,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadLookAheadTask() {
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	lookAheadTask, err := timerQueueProcessBase.readLookAheadTask(readLevel, maxReadLevel)
 	s.Nil(err)
 	s.Equal(response.Timers[0], lookAheadTask)
@@ -265,7 +275,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_NoNext
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, lookAheadRequest).Return(&persistence.GetTimerIndexTasksResponse{}, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal(response.Timers, got.timerTasks)
@@ -304,7 +315,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_NoLookAhead_HasNex
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal(response.Timers, got.timerTasks)
@@ -354,7 +366,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_NoNex
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal([]*persistence.TimerTaskInfo{response.Timers[0]}, got.timerTasks)
@@ -404,7 +417,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_HasLookAhead_HasNe
 	mockExecutionMgr := s.mockShard.Resource.ExecutionMgr
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal([]*persistence.TimerTaskInfo{response.Timers[0]}, got.timerTasks)
@@ -462,7 +476,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_LookAheadFailed_No
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, request).Return(response, nil).Once()
 	mockExecutionMgr.On("GetTimerIndexTasks", mock.Anything, lookAheadRequest).Return(nil, errors.New("some random error")).Times(s.mockShard.GetConfig().TimerProcessorGetFailureRetryCount())
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 	got, err := timerQueueProcessBase.readAndFilterTasks(readLevel, maxReadLevel, request.NextPageToken)
 	s.Nil(err)
 	s.Equal(response.Timers, got.timerTasks)
@@ -471,7 +486,8 @@ func (s *timerQueueProcessorBaseSuite) TestReadAndFilterTasks_LookAheadFailed_No
 }
 
 func (s *timerQueueProcessorBaseSuite) TestNotifyNewTimes() {
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(nil, nil, nil, nil, nil)
+	defer done()
 
 	// assert the initial state
 	s.True(timerQueueProcessBase.newTime.IsZero())
@@ -483,14 +499,18 @@ func (s *timerQueueProcessorBaseSuite) TestNotifyNewTimes() {
 	now := time.Now()
 	timerQueueProcessBase.notifyNewTimers([]persistence.Task{
 		&persistence.UserTimerTask{
-			VisibilityTimestamp: now.Add(5 * time.Second),
-			TaskID:              int64(59),
-			EventID:             int64(28),
+			TaskData: persistence.TaskData{
+				VisibilityTimestamp: now.Add(5 * time.Second),
+				TaskID:              int64(59),
+			},
+			EventID: int64(28),
 		},
 		&persistence.UserTimerTask{
-			VisibilityTimestamp: now.Add(1 * time.Second),
-			TaskID:              int64(59),
-			EventID:             int64(28),
+			TaskData: persistence.TaskData{
+				VisibilityTimestamp: now.Add(1 * time.Second),
+				TaskID:              int64(59),
+			},
+			EventID: int64(28),
 		},
 	})
 	select {
@@ -502,9 +522,11 @@ func (s *timerQueueProcessorBaseSuite) TestNotifyNewTimes() {
 
 	timerQueueProcessBase.notifyNewTimers([]persistence.Task{
 		&persistence.UserTimerTask{
-			VisibilityTimestamp: now.Add(10 * time.Second),
-			TaskID:              int64(59),
-			EventID:             int64(28),
+			TaskData: persistence.TaskData{
+				VisibilityTimestamp: now.Add(10 * time.Second),
+				TaskID:              int64(59),
+			},
+			EventID: int64(28),
 		},
 	})
 	select {
@@ -533,7 +555,8 @@ func (s *timerQueueProcessorBaseSuite) TestProcessQueueCollections_SkipRead() {
 		return shardMaxReadLevel
 	}
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	defer done()
 	timerQueueProcessBase.processQueueCollections(map[int]struct{}{queueLevel: {}})
 
 	s.Len(timerQueueProcessBase.processingQueueCollections, 1)
@@ -614,7 +637,8 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_HasNextPage() {
 
 	s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	defer done()
 	timerQueueProcessBase.processQueueCollections(map[int]struct{}{queueLevel: {}})
 
 	s.Len(timerQueueProcessBase.processingQueueCollections, 1)
@@ -704,7 +728,8 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_HasLookAhead(
 
 	s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	defer done()
 	timerQueueProcessBase.processingQueueReadProgress[0] = timeTaskReadProgress{
 		currentQueue:  timerQueueProcessBase.processingQueueCollections[0].ActiveQueue(),
 		readLevel:     ackLevel,
@@ -801,7 +826,8 @@ func (s *timerQueueProcessorBaseSuite) TestProcessBatch_NoNextPage_NoLookAhead()
 
 	s.mockTaskProcessor.EXPECT().TrySubmit(gomock.Any()).Return(true, nil).AnyTimes()
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase, done := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	defer done()
 	timerQueueProcessBase.processingQueueReadProgress[0] = timeTaskReadProgress{
 		currentQueue:  timerQueueProcessBase.processingQueueCollections[0].ActiveQueue(),
 		readLevel:     ackLevel,
@@ -848,7 +874,7 @@ func (s *timerQueueProcessorBaseSuite) TestTimerProcessorPump_HandleAckLevelUpda
 		return newTimerTaskKey(now, 0)
 	}
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase, _ := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
 	timerQueueProcessBase.options.UpdateAckInterval = dynamicconfig.GetDurationPropertyFn(1 * time.Millisecond)
 	updatedCh := make(chan struct{}, 1)
 	timerQueueProcessBase.updateAckLevelFn = func() (bool, task.Key, error) {
@@ -883,7 +909,7 @@ func (s *timerQueueProcessorBaseSuite) TestTimerProcessorPump_SplitQueue() {
 		return newTimerTaskKey(now, 0)
 	}
 
-	timerQueueProcessBase := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
+	timerQueueProcessBase, _ := s.newTestTimerQueueProcessorBase(processingQueueStates, updateMaxReadLevel, nil, nil, nil)
 	timerQueueProcessBase.options.SplitQueueInterval = dynamicconfig.GetDurationPropertyFn(1 * time.Millisecond)
 	splittedCh := make(chan struct{}, 1)
 	timerQueueProcessBase.splitProcessingQueueCollectionFn = func(splitPolicy ProcessingQueueSplitPolicy, upsertPollTimeFn func(int, time.Time)) {
@@ -906,21 +932,25 @@ func (s *timerQueueProcessorBaseSuite) newTestTimerQueueProcessorBase(
 	updateClusterAckLevel updateClusterAckLevelFn,
 	updateProcessingQueueStates updateProcessingQueueStatesFn,
 	queueShutdown queueShutdownFn,
-) *timerQueueProcessorBase {
+) (*timerQueueProcessorBase, func()) {
+	timerGate := NewLocalTimerGate(s.mockShard.GetTimeSource())
+
 	return newTimerQueueProcessorBase(
-		s.clusterName,
-		s.mockShard,
-		processingQueueStates,
-		s.mockTaskProcessor,
-		NewLocalTimerGate(s.mockShard.GetTimeSource()),
-		newTimerQueueProcessorOptions(s.mockShard.GetConfig(), true, false),
-		updateMaxReadLevel,
-		updateClusterAckLevel,
-		updateProcessingQueueStates,
-		queueShutdown,
-		nil,
-		nil,
-		s.logger,
-		s.metricsClient,
-	)
+			s.clusterName,
+			s.mockShard,
+			processingQueueStates,
+			s.mockTaskProcessor,
+			timerGate,
+			newTimerQueueProcessorOptions(s.mockShard.GetConfig(), true, false),
+			updateMaxReadLevel,
+			updateClusterAckLevel,
+			updateProcessingQueueStates,
+			queueShutdown,
+			nil,
+			nil,
+			s.logger,
+			s.metricsClient,
+		), func() {
+			timerGate.Close()
+		}
 }

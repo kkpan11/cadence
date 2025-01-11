@@ -19,30 +19,56 @@ coverage:
         if_ci_failed: ignore   # require the CI to pass before setting the status
     patch:
       default:
-        informational: true
+        target: 75%            # specify the target coverage for each commit status
+                               #   option: "auto" (compare against parent commit or pull request base)
+                               #   option: "X%" a static target percentage to hit
+        threshold: 0%          # allow the coverage drop by x% before marking as failure
 comment:
   layout: "header, files, footer"
   hide_project_coverage: false
 codecov:
   require_ci_to_pass: false
 ignore:
+  - "**/*_cql.go"
   - "**/*_generated.go"
   - "**/*_mock.go"
   - "**/*_test.go"
+  - "**/*Test.go"
   - "**/*_test_utils.go"
+  - "**/constants.go"
+  - "**/interface.go"
+  - "**/interfaces.go"
   - "**/main.go"
+  - "**/*mocks.go"
   - "**/mocks/**"
+  - "**/testdata/**"
   - "**/testing/**"
+  - "**/types.go"
+  - "**/version.go"
   - "bench/**"
   - "canary/**"
+  - "cmd/**"
   - "common/persistence/persistence-tests/**"
+  - "common/domain/errors.go"
   - "common/log/**"
   - "common/metrics/**"
+  - "common/persistence/nosql/nosqlplugin/cassandra/admin.go"
   - "common/persistence/nosql/nosqlplugin/dynamodb/**"
   - "common/persistence/nosql/nosqlplugin/mongodb/**"
   - "common/types/shared.go" # 8k lines of getters. Not worth testing manually but consider switching to generated code.
-  - "common/types/testdata/**"
-  - "idls/**"
   - "host/**"
+  - "idls/**"
+  - "service/frontend/service.go"
+  - "service/history/constants/test_constants.go"
+  - "service/history/execution/mutable_state.go"
+  - "service/history/shard/contextTest.go"
+  - "service/history/workflow/errors.go"
+  - "service/history/service.go"
+  - "service/matching/service.go"
+  - "service/matching/tasklist/testing.go"
+  - "service/worker/service.go"
   - "testflags/**"
+  - "tools/common/schema/test/**"
   - "tools/linter/**"
+  - "tools/matchingsimulationcomparison/**"
+  - "tools/cli/factory.go"

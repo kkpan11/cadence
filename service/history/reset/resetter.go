@@ -64,7 +64,7 @@ type (
 		domainCache       cache.DomainCache
 		clusterMetadata   cluster.Metadata
 		historyV2Mgr      persistence.HistoryManager
-		executionCache    *execution.Cache
+		executionCache    execution.Cache
 		newStateRebuilder nDCStateRebuilderProvider
 		logger            log.Logger
 	}
@@ -77,7 +77,7 @@ var _ WorkflowResetter = (*workflowResetterImpl)(nil)
 // NewWorkflowResetter creates a workflow resetter
 func NewWorkflowResetter(
 	shard shard.Context,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	logger log.Logger,
 ) WorkflowResetter {
 	return &workflowResetterImpl{
@@ -211,6 +211,7 @@ func (r *workflowResetterImpl) prepareResetWorkflow(
 		resetRunID,
 		baseLastEventVersion,
 		resetReason,
+		resetRequestID,
 	)
 	if err != nil {
 		return nil, err
@@ -302,6 +303,7 @@ func (r *workflowResetterImpl) persistToDB(
 		persistence.CreateWorkflowModeContinueAsNew,
 		currentRunID,
 		currentLastWriteVersion,
+		persistence.CreateWorkflowRequestModeNew,
 	)
 }
 
@@ -585,6 +587,7 @@ func (r *workflowResetterImpl) reapplyEvents(
 				attr.GetSignalName(),
 				attr.GetInput(),
 				attr.GetIdentity(),
+				"", // Do not set requestID for requests reapplied, because they have already been applied previously
 			); err != nil {
 				return err
 			}
@@ -636,6 +639,7 @@ func (r *workflowResetterImpl) closePendingDecisionTask(
 	resetRunID string,
 	baseLastEventVersion int64,
 	resetReason string,
+	resetRequestID string,
 ) (execution.MutableState, error) {
 
 	if len(resetMutableState.GetPendingChildExecutionInfos()) > 0 {
@@ -657,19 +661,21 @@ func (r *workflowResetterImpl) closePendingDecisionTask(
 			baseRunID,
 			resetRunID,
 			baseLastEventVersion,
+			resetRequestID,
 		)
 		if err != nil {
 			return nil, err
 		}
 	} else if decision, ok := resetMutableState.GetPendingDecision(); ok {
 		if ok {
-			//reset workflow has decision task schedule
+			// reset workflow has decision task schedule
 			_, err := resetMutableState.AddDecisionTaskResetTimeoutEvent(
 				decision.ScheduleID,
 				baseRunID,
 				resetRunID,
 				baseLastEventVersion,
 				resetReason,
+				resetRequestID,
 			)
 			if err != nil {
 				return nil, err
