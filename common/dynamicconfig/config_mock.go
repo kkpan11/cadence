@@ -74,6 +74,11 @@ func GetBoolPropertyFnFilteredByDomainID(value bool) func(domainID string) bool 
 	return func(domainID string) bool { return value }
 }
 
+// GetBoolPropertyFilteredByTaskListInfo returns value as BoolPropertyFnWithTaskListInfoFilters
+func GetBoolPropertyFilteredByTaskListInfo(value bool) func(domain string, taskList string, taskType int) bool {
+	return func(domain string, taskList string, taskType int) bool { return value }
+}
+
 // GetDurationPropertyFnFilteredByDomain returns value as DurationPropertyFnFilteredByDomain
 func GetDurationPropertyFnFilteredByDomain(value time.Duration) func(domain string) time.Duration {
 	return func(domain string) time.Duration { return value }
@@ -97,6 +102,11 @@ func GetDurationPropertyFnFilteredByShardID(value time.Duration) func(shardID in
 // GetStringPropertyFn returns value as StringPropertyFn
 func GetStringPropertyFn(value string) func(opts ...FilterOption) string {
 	return func(...FilterOption) string { return value }
+}
+
+// GetStringPropertyFnFilteredByDomain returns value as StringPropertyFnWithDomainFilters
+func GetStringPropertyFnFilteredByDomain(value string) func(domain string) string {
+	return func(domain string) string { return value }
 }
 
 // GetMapPropertyFn returns value as MapPropertyFn

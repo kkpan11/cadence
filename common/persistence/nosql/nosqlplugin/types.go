@@ -123,6 +123,24 @@ type (
 		LastWriteVersion int64
 	}
 
+	// WorkflowRequestRow is the request which has been applied to a workflow
+	WorkflowRequestRow struct {
+		ShardID     int
+		DomainID    string
+		WorkflowID  string
+		RequestType persistence.WorkflowRequestType
+		RequestID   string
+		Version     int64
+		RunID       string
+	}
+
+	WorkflowRequestWriteMode int
+
+	WorkflowRequestsWriteRequest struct {
+		Rows      []*WorkflowRequestRow
+		WriteMode WorkflowRequestWriteMode
+	}
+
 	// TasksFilter is for filtering tasks
 	TasksFilter struct {
 		TaskListFilter
@@ -150,6 +168,7 @@ type (
 		WorkflowID      string
 		RunID           string
 		ScheduledID     int64
+		Expiry          time.Time
 		CreatedTime     time.Time
 		PartitionConfig map[string]string
 	}
@@ -167,10 +186,11 @@ type (
 		TaskListName string
 		TaskListType int
 
-		RangeID         int64
-		TaskListKind    int
-		AckLevel        int64
-		LastUpdatedTime time.Time
+		RangeID                 int64
+		TaskListKind            int
+		AckLevel                int64
+		LastUpdatedTime         time.Time
+		AdaptivePartitionConfig *persistence.TaskListPartitionConfig
 	}
 
 	// ListTaskListResult is the result of list tasklists
@@ -195,7 +215,7 @@ type (
 	// DomainRow defines the row struct for queue message
 	DomainRow struct {
 		Info                        *persistence.DomainInfo
-		Config                      *NoSQLInternalDomainConfig
+		Config                      *persistence.InternalDomainConfig
 		ReplicationConfig           *persistence.DomainReplicationConfig
 		ConfigVersion               int64
 		FailoverVersion             int64
@@ -205,21 +225,6 @@ type (
 		NotificationVersion         int64
 		LastUpdatedTime             time.Time
 		IsGlobalDomain              bool
-	}
-
-	// NoSQLInternalDomainConfig defines the struct for the domainConfig
-	NoSQLInternalDomainConfig struct {
-		Retention                time.Duration
-		EmitMetric               bool                 // deprecated
-		ArchivalBucket           string               // deprecated
-		ArchivalStatus           types.ArchivalStatus // deprecated
-		HistoryArchivalStatus    types.ArchivalStatus
-		HistoryArchivalURI       string
-		VisibilityArchivalStatus types.ArchivalStatus
-		VisibilityArchivalURI    string
-		BadBinaries              *persistence.DataBlob
-		IsolationGroups          *persistence.DataBlob
-		AsyncWorkflowsConfig     *persistence.DataBlob
 	}
 
 	// SelectMessagesBetweenRequest is a request struct for SelectMessagesBetween
@@ -336,6 +341,11 @@ const (
 	EventBufferWriteModeAppend
 	// EventBufferWriteModeClear will clear(delete all event from) the event buffer
 	EventBufferWriteModeClear
+)
+
+const (
+	WorkflowRequestWriteModeInsert WorkflowRequestWriteMode = iota
+	WorkflowRequestWriteModeUpsert
 )
 
 // GetCurrentRunID returns the current runID

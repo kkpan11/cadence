@@ -26,10 +26,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/cache"
 	"github.com/uber/cadence/common/log"
@@ -115,6 +115,7 @@ func (s *timerQueueTaskExecutorBaseSuite) TearDownTest() {
 	s.controller.Finish()
 	s.mockShard.Finish(s.T())
 	s.mockArchivalClient.AssertExpectations(s.T())
+	s.timerQueueTaskExecutorBase.Stop()
 }
 
 func (s *timerQueueTaskExecutorBaseSuite) TestDeleteWorkflow_NoErr() {
@@ -170,6 +171,9 @@ func (s *timerQueueTaskExecutorBaseSuite) TestArchiveHistory_NoErr_InlineArchiva
 		nil,
 		0,
 		nil,
+		0,
+		0,
+		0,
 	)
 	err := s.timerQueueTaskExecutorBase.archiveWorkflow(
 		context.Background(),
@@ -201,6 +205,9 @@ func (s *timerQueueTaskExecutorBaseSuite) TestArchiveHistory_SendSignalErr() {
 		nil,
 		0,
 		nil,
+		0,
+		0,
+		0,
 	)
 	err := s.timerQueueTaskExecutorBase.archiveWorkflow(
 		context.Background(),

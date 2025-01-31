@@ -70,11 +70,13 @@ type (
 		SchemaDir       string           `yaml:"-"`
 		ClusterMetadata cluster.Metadata `yaml:"-"`
 		ProtoVersion    int              `yaml:"-"`
+		Replicas        int              `yaml:"-"`
+		MaxConns        int              `yaml:"-"`
 	}
 
 	// TestBase wraps the base setup needed to create workflows over persistence layer.
 	TestBase struct {
-		suite.Suite
+		*suite.Suite
 		ShardMgr                  persistence.ShardManager
 		ExecutionMgrFactory       client.Factory
 		ExecutionManager          persistence.ExecutionManager
@@ -114,6 +116,7 @@ const (
 // NewTestBaseFromParams returns a customized test base from given input
 func NewTestBaseFromParams(t *testing.T, params TestBaseParams) *TestBase {
 	res := &TestBase{
+		Suite:                 &suite.Suite{},
 		DefaultTestCluster:    params.DefaultTestCluster,
 		VisibilityTestCluster: params.VisibilityTestCluster,
 		ClusterMetadata:       params.ClusterMetadata,
@@ -137,6 +140,8 @@ func NewTestBaseWithNoSQL(t *testing.T, options *TestBaseOptions) *TestBase {
 		Host:         options.DBHost,
 		Port:         options.DBPort,
 		ProtoVersion: options.ProtoVersion,
+		Replicas:     options.Replicas,
+		MaxConns:     options.MaxConns,
 	})
 	metadata := options.ClusterMetadata
 	if metadata.GetCurrentClusterName() == "" {
@@ -162,7 +167,10 @@ func NewTestBaseWithSQL(t *testing.T, options *TestBaseOptions) *TestBase {
 	if options.DBName == "" {
 		options.DBName = "test_" + GenerateRandomDBName(10)
 	}
-	testCluster := sql.NewTestCluster(options.DBPluginName, options.DBName, options.DBUsername, options.DBPassword, options.DBHost, options.DBPort, options.SchemaDir)
+	testCluster, err := sql.NewTestCluster(options.DBPluginName, options.DBName, options.DBUsername, options.DBPassword, options.DBHost, options.DBPort, options.SchemaDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metadata := options.ClusterMetadata
 	if metadata.GetCurrentClusterName() == "" {
 		metadata = cluster.GetTestClusterMetadata(false)
@@ -371,11 +379,13 @@ func (s *TestBase) CreateWorkflowExecutionWithBranchToken(
 			ExecutionStats: &persistence.ExecutionStats{},
 			TransferTasks: []persistence.Task{
 				&persistence.DecisionTask{
-					TaskID:              s.GetNextSequenceNumber(),
-					DomainID:            domainID,
-					TaskList:            taskList,
-					ScheduleID:          decisionScheduleID,
-					VisibilityTimestamp: time.Now(),
+					TaskData: persistence.TaskData{
+						TaskID:              s.GetNextSequenceNumber(),
+						VisibilityTimestamp: time.Now(),
+					},
+					DomainID:   domainID,
+					TaskList:   taskList,
+					ScheduleID: decisionScheduleID,
 				},
 			},
 			TimerTasks:       timerTasks,
@@ -454,7 +464,9 @@ func (s *TestBase) CreateChildWorkflowExecution(ctx context.Context, domainID st
 			ExecutionStats: &persistence.ExecutionStats{},
 			TransferTasks: []persistence.Task{
 				&persistence.DecisionTask{
-					TaskID:     s.GetNextSequenceNumber(),
+					TaskData: persistence.TaskData{
+						TaskID: s.GetNextSequenceNumber(),
+					},
 					DomainID:   domainID,
 					TaskList:   taskList,
 					ScheduleID: decisionScheduleID,
@@ -476,6 +488,7 @@ func (s *TestBase) GetWorkflowExecutionInfoWithStats(ctx context.Context, domain
 	response, err := s.ExecutionManager.GetWorkflowExecution(ctx, &persistence.GetWorkflowExecutionRequest{
 		DomainID:  domainID,
 		Execution: workflowExecution,
+		RangeID:   s.ShardInfo.RangeID,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -490,6 +503,7 @@ func (s *TestBase) GetWorkflowExecutionInfo(ctx context.Context, domainID string
 	response, err := s.ExecutionManager.GetWorkflowExecution(ctx, &persistence.GetWorkflowExecutionRequest{
 		DomainID:  domainID,
 		Execution: workflowExecution,
+		RangeID:   s.ShardInfo.RangeID,
 	})
 	if err != nil {
 		return nil, err
@@ -524,7 +538,9 @@ func (s *TestBase) ContinueAsNewExecution(
 
 	now := time.Now()
 	newdecisionTask := &persistence.DecisionTask{
-		TaskID:     s.GetNextSequenceNumber(),
+		TaskData: persistence.TaskData{
+			TaskID: s.GetNextSequenceNumber(),
+		},
 		DomainID:   updatedInfo.DomainID,
 		TaskList:   updatedInfo.TaskList,
 		ScheduleID: int64(decisionScheduleID),
@@ -582,8 +598,8 @@ func (s *TestBase) ContinueAsNewExecution(
 		},
 		RangeID:  s.ShardInfo.RangeID,
 		Encoding: pickRandomEncoding(),
-		//To DO: next PR for UpdateWorkflowExecution
-		//DomainName: s.DomainManager.GetName(),
+		// To DO: next PR for UpdateWorkflowExecution
+		// DomainName: s.DomainManager.GetName(),
 	}
 	req.UpdateWorkflowMutation.ExecutionInfo.State = persistence.WorkflowStateCompleted
 	req.UpdateWorkflowMutation.ExecutionInfo.CloseStatus = persistence.WorkflowCloseStatusContinuedAsNew
@@ -640,7 +656,7 @@ func (s *TestBase) UpdateWorkflowExecutionAndFinish(
 	versionHistories *persistence.VersionHistories,
 ) error {
 	transferTasks := []persistence.Task{}
-	transferTasks = append(transferTasks, &persistence.CloseExecutionTask{TaskID: s.GetNextSequenceNumber()})
+	transferTasks = append(transferTasks, &persistence.CloseExecutionTask{TaskData: persistence.TaskData{TaskID: s.GetNextSequenceNumber()}})
 	_, err := s.ExecutionManager.UpdateWorkflowExecution(ctx, &persistence.UpdateWorkflowExecutionRequest{
 		RangeID: s.ShardInfo.RangeID,
 		UpdateWorkflowMutation: persistence.WorkflowMutation{
@@ -656,8 +672,8 @@ func (s *TestBase) UpdateWorkflowExecutionAndFinish(
 			VersionHistories:    versionHistories,
 		},
 		Encoding: pickRandomEncoding(),
-		//To DO: next PR for UpdateWorkflowExecution
-		//DomainName: s.DomainManager.GetName(),
+		// To DO: next PR for UpdateWorkflowExecution
+		// DomainName: s.DomainManager.GetName(),
 	})
 	return err
 }
@@ -1082,7 +1098,9 @@ func (s *TestBase) UpdateWorkflowExecutionWithReplication(
 	}
 	for _, decisionScheduleID := range decisionScheduleIDs {
 		transferTasks = append(transferTasks, &persistence.DecisionTask{
-			TaskID:     s.GetNextSequenceNumber(),
+			TaskData: persistence.TaskData{
+				TaskID: s.GetNextSequenceNumber(),
+			},
 			DomainID:   updatedInfo.DomainID,
 			TaskList:   updatedInfo.TaskList,
 			ScheduleID: int64(decisionScheduleID)})
@@ -1090,7 +1108,9 @@ func (s *TestBase) UpdateWorkflowExecutionWithReplication(
 
 	for _, activityScheduleID := range activityScheduleIDs {
 		transferTasks = append(transferTasks, &persistence.ActivityTask{
-			TaskID:     s.GetNextSequenceNumber(),
+			TaskData: persistence.TaskData{
+				TaskID: s.GetNextSequenceNumber(),
+			},
 			DomainID:   updatedInfo.DomainID,
 			TaskList:   updatedInfo.TaskList,
 			ScheduleID: int64(activityScheduleID)})
@@ -1397,29 +1417,7 @@ Loop:
 
 // GetCrossClusterTasks is a utility method to get tasks from transfer task queue
 func (s *TestBase) GetCrossClusterTasks(ctx context.Context, targetCluster string, readLevel int64, batchSize int, getAll bool) ([]*persistence.CrossClusterTaskInfo, error) {
-	result := []*persistence.CrossClusterTaskInfo{}
-	var token []byte
-
-	for {
-		response, err := s.ExecutionManager.GetCrossClusterTasks(ctx, &persistence.GetCrossClusterTasksRequest{
-			TargetCluster: targetCluster,
-			ReadLevel:     readLevel,
-			MaxReadLevel:  int64(math.MaxInt64),
-			BatchSize:     batchSize,
-			NextPageToken: token,
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		token = response.NextPageToken
-		result = append(result, response.Tasks...)
-		if len(response.NextPageToken) == 0 || !getAll {
-			break
-		}
-	}
-
-	return result, nil
+	return nil, nil
 }
 
 // GetReplicationTasks is a utility method to get tasks from replication task queue
@@ -1580,28 +1578,11 @@ func (s *TestBase) RangeCompleteTransferTask(ctx context.Context, exclusiveBegin
 
 // CompleteCrossClusterTask is a utility method to complete a cross-cluster task
 func (s *TestBase) CompleteCrossClusterTask(ctx context.Context, targetCluster string, taskID int64) error {
-	return s.ExecutionManager.CompleteCrossClusterTask(ctx, &persistence.CompleteCrossClusterTaskRequest{
-		TargetCluster: targetCluster,
-		TaskID:        taskID,
-	})
+	return nil
 }
 
 // RangeCompleteCrossClusterTask is a utility method to complete a range of cross-cluster tasks
 func (s *TestBase) RangeCompleteCrossClusterTask(ctx context.Context, targetCluster string, exclusiveBeginTaskID int64, inclusiveEndTaskID int64) error {
-	for {
-		resp, err := s.ExecutionManager.RangeCompleteCrossClusterTask(ctx, &persistence.RangeCompleteCrossClusterTaskRequest{
-			TargetCluster:        targetCluster,
-			ExclusiveBeginTaskID: exclusiveBeginTaskID,
-			InclusiveEndTaskID:   inclusiveEndTaskID,
-			PageSize:             1,
-		})
-		if err != nil {
-			return err
-		}
-		if !persistence.HasMoreRowsToDelete(resp.TasksCompleted, 1) {
-			break
-		}
-	}
 	return nil
 }
 
@@ -1684,8 +1665,7 @@ func (s *TestBase) CreateDecisionTask(ctx context.Context, domainID string, work
 	taskID := s.GetNextSequenceNumber()
 	tasks := []*persistence.CreateTaskInfo{
 		{
-			TaskID:    taskID,
-			Execution: workflowExecution,
+			TaskID: taskID,
 			Data: &persistence.TaskInfo{
 				DomainID:        domainID,
 				WorkflowID:      workflowExecution.WorkflowID,
@@ -1747,16 +1727,15 @@ func (s *TestBase) CreateActivityTasks(ctx context.Context, domainID string, wor
 		taskID := s.GetNextSequenceNumber()
 		tasks := []*persistence.CreateTaskInfo{
 			{
-				TaskID:    taskID,
-				Execution: workflowExecution,
+				TaskID: taskID,
 				Data: &persistence.TaskInfo{
-					DomainID:               domainID,
-					WorkflowID:             workflowExecution.WorkflowID,
-					RunID:                  workflowExecution.RunID,
-					TaskID:                 taskID,
-					ScheduleID:             activityScheduleID,
-					ScheduleToStartTimeout: defaultScheduleToStartTimeout,
-					PartitionConfig:        partitionConfig,
+					DomainID:                      domainID,
+					WorkflowID:                    workflowExecution.WorkflowID,
+					RunID:                         workflowExecution.RunID,
+					TaskID:                        taskID,
+					ScheduleID:                    activityScheduleID,
+					ScheduleToStartTimeoutSeconds: defaultScheduleToStartTimeout,
+					PartitionConfig:               partitionConfig,
 				},
 			},
 		}

@@ -30,6 +30,7 @@ import (
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/common/log"
+	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/persistence"
 	"github.com/uber/cadence/common/persistence/nosql/nosqlplugin"
 	"github.com/uber/cadence/common/types"
@@ -37,14 +38,14 @@ import (
 
 type (
 	nosqlTaskStore struct {
-		*shardedNosqlStore
+		shardedNosqlStore
 	}
 )
 
 const (
-	initialRangeID    = 1 // Id of the first range of a new task list
-	initialAckLevel   = 0
-	stickyTaskListTTL = int64(24 * time.Hour / time.Second) // if sticky task_list stopped being updated, remove it in one day
+	initialRangeID    int64 = 1 // Id of the first range of a new task list
+	initialAckLevel   int64 = 0
+	stickyTaskListTTL       = int64(24 * time.Hour / time.Second) // if sticky task_list stopped being updated, remove it in one day
 )
 
 // newNoSQLTaskStore is used to create an instance of TaskStore implementation
@@ -124,7 +125,7 @@ func (t *nosqlTaskStore) LeaseTaskList(
 			}
 			err = storeShard.db.InsertTaskList(ctx, currTL)
 		} else {
-			return nil, convertCommonErrors(storeShard.db, "LeaseTaskList", err)
+			return nil, convertCommonErrors(storeShard.db, "LeaseTaskList", selectErr)
 		}
 	} else {
 		// if request.RangeID is > 0, we are trying to renew an already existing
@@ -141,13 +142,14 @@ func (t *nosqlTaskStore) LeaseTaskList(
 		currTL.RangeID++
 
 		err = storeShard.db.UpdateTaskList(ctx, &nosqlplugin.TaskListRow{
-			DomainID:        request.DomainID,
-			TaskListName:    request.TaskList,
-			TaskListType:    request.TaskType,
-			RangeID:         currTL.RangeID,
-			TaskListKind:    currTL.TaskListKind,
-			AckLevel:        currTL.AckLevel,
-			LastUpdatedTime: now,
+			DomainID:                request.DomainID,
+			TaskListName:            request.TaskList,
+			TaskListType:            request.TaskType,
+			RangeID:                 currTL.RangeID,
+			TaskListKind:            currTL.TaskListKind,
+			AckLevel:                currTL.AckLevel,
+			LastUpdatedTime:         now,
+			AdaptivePartitionConfig: currTL.AdaptivePartitionConfig,
 		}, currTL.RangeID-1)
 	}
 	if err != nil {
@@ -161,15 +163,45 @@ func (t *nosqlTaskStore) LeaseTaskList(
 		return nil, convertCommonErrors(storeShard.db, "LeaseTaskList", err)
 	}
 	tli := &persistence.TaskListInfo{
-		DomainID:    request.DomainID,
-		Name:        request.TaskList,
-		TaskType:    request.TaskType,
-		RangeID:     currTL.RangeID,
-		AckLevel:    currTL.AckLevel,
-		Kind:        request.TaskListKind,
-		LastUpdated: now,
+		DomainID:                request.DomainID,
+		Name:                    request.TaskList,
+		TaskType:                request.TaskType,
+		RangeID:                 currTL.RangeID,
+		AckLevel:                currTL.AckLevel,
+		Kind:                    request.TaskListKind,
+		LastUpdated:             now,
+		AdaptivePartitionConfig: currTL.AdaptivePartitionConfig,
 	}
 	return &persistence.LeaseTaskListResponse{TaskListInfo: tli}, nil
+}
+
+func (t *nosqlTaskStore) GetTaskList(
+	ctx context.Context,
+	request *persistence.GetTaskListRequest,
+) (*persistence.GetTaskListResponse, error) {
+	storeShard, err := t.GetStoreShardByTaskList(request.DomainID, request.TaskList, request.TaskType)
+	if err != nil {
+		return nil, err
+	}
+	currTL, err := storeShard.db.SelectTaskList(ctx, &nosqlplugin.TaskListFilter{
+		DomainID:     request.DomainID,
+		TaskListName: request.TaskList,
+		TaskListType: request.TaskType,
+	})
+	if err != nil {
+		return nil, convertCommonErrors(storeShard.db, "GetTaskList", err)
+	}
+	tli := &persistence.TaskListInfo{
+		DomainID:                request.DomainID,
+		Name:                    request.TaskList,
+		TaskType:                request.TaskType,
+		RangeID:                 currTL.RangeID,
+		AckLevel:                currTL.AckLevel,
+		Kind:                    currTL.TaskListKind,
+		LastUpdated:             currTL.LastUpdatedTime,
+		AdaptivePartitionConfig: currTL.AdaptivePartitionConfig,
+	}
+	return &persistence.GetTaskListResponse{TaskListInfo: tli}, nil
 }
 
 func (t *nosqlTaskStore) UpdateTaskList(
@@ -179,13 +211,14 @@ func (t *nosqlTaskStore) UpdateTaskList(
 	tli := request.TaskListInfo
 	var err error
 	taskListToUpdate := &nosqlplugin.TaskListRow{
-		DomainID:        tli.DomainID,
-		TaskListName:    tli.Name,
-		TaskListType:    tli.TaskType,
-		RangeID:         tli.RangeID,
-		TaskListKind:    tli.Kind,
-		AckLevel:        tli.AckLevel,
-		LastUpdatedTime: time.Now(),
+		DomainID:                tli.DomainID,
+		TaskListName:            tli.Name,
+		TaskListType:            tli.TaskType,
+		RangeID:                 tli.RangeID,
+		TaskListKind:            tli.Kind,
+		AckLevel:                tli.AckLevel,
+		LastUpdatedTime:         time.Now(),
+		AdaptivePartitionConfig: tli.AdaptivePartitionConfig,
 	}
 	storeShard, err := t.GetStoreShardByTaskList(tli.DomainID, tli.Name, tli.TaskType)
 	if err != nil {
@@ -252,23 +285,40 @@ func (t *nosqlTaskStore) DeleteTaskList(
 
 func (t *nosqlTaskStore) CreateTasks(
 	ctx context.Context,
-	request *persistence.InternalCreateTasksRequest,
+	request *persistence.CreateTasksRequest,
 ) (*persistence.CreateTasksResponse, error) {
 	now := time.Now()
 	var tasks []*nosqlplugin.TaskRowForInsert
-	for _, t := range request.Tasks {
+	for _, taskRequest := range request.Tasks {
 		task := &nosqlplugin.TaskRow{
 			DomainID:        request.TaskListInfo.DomainID,
 			TaskListName:    request.TaskListInfo.Name,
 			TaskListType:    request.TaskListInfo.TaskType,
-			TaskID:          t.TaskID,
-			WorkflowID:      t.Execution.GetWorkflowID(),
-			RunID:           t.Execution.GetRunID(),
-			ScheduledID:     t.Data.ScheduleID,
+			TaskID:          taskRequest.TaskID,
+			WorkflowID:      taskRequest.Data.WorkflowID,
+			RunID:           taskRequest.Data.RunID,
+			ScheduledID:     taskRequest.Data.ScheduleID,
 			CreatedTime:     now,
-			PartitionConfig: t.Data.PartitionConfig,
+			PartitionConfig: taskRequest.Data.PartitionConfig,
 		}
-		ttl := int(t.Data.ScheduleToStartTimeout.Seconds())
+
+		var ttl int
+		// If the Data has a non-zero Expiry value, means that the ask is being re-added to the tasks table.
+		// If that's the case, use the Expiry value to calculate the new TTL value to match history's timeout value.
+		if !taskRequest.Data.Expiry.IsZero() {
+			scheduleToStartTimeoutSeconds := int(taskRequest.Data.Expiry.Sub(now).Seconds())
+
+			if scheduleToStartTimeoutSeconds > 0 {
+				ttl = scheduleToStartTimeoutSeconds
+			} else {
+				logger := t.GetLogger()
+				logger.Warn("Async task not created. Task is expired", tag.WorkflowID(taskRequest.Data.WorkflowID), tag.WorkflowRunID(taskRequest.Data.RunID), tag.WorkflowScheduleID(taskRequest.Data.ScheduleID))
+				continue
+			}
+		} else {
+			ttl = int(taskRequest.Data.ScheduleToStartTimeoutSeconds)
+		}
+
 		tasks = append(tasks, &nosqlplugin.TaskRowForInsert{
 			TaskRow:    *task,
 			TTLSeconds: ttl,
@@ -307,13 +357,13 @@ func (t *nosqlTaskStore) CreateTasks(
 func (t *nosqlTaskStore) GetTasks(
 	ctx context.Context,
 	request *persistence.GetTasksRequest,
-) (*persistence.InternalGetTasksResponse, error) {
+) (*persistence.GetTasksResponse, error) {
 	if request.MaxReadLevel == nil {
 		request.MaxReadLevel = common.Int64Ptr(math.MaxInt64)
 	}
 
 	if request.ReadLevel > *request.MaxReadLevel {
-		return &persistence.InternalGetTasksResponse{}, nil
+		return &persistence.GetTasksResponse{}, nil
 	}
 
 	storeShard, err := t.GetStoreShardByTaskList(request.DomainID, request.TaskList, request.TaskType)
@@ -337,7 +387,7 @@ func (t *nosqlTaskStore) GetTasks(
 		return nil, convertCommonErrors(storeShard.db, "GetTasks", err)
 	}
 
-	response := &persistence.InternalGetTasksResponse{}
+	response := &persistence.GetTasksResponse{}
 	for _, t := range resp {
 		response.Tasks = append(response.Tasks, toTaskInfo(t))
 	}
@@ -345,8 +395,8 @@ func (t *nosqlTaskStore) GetTasks(
 	return response, nil
 }
 
-func toTaskInfo(t *nosqlplugin.TaskRow) *persistence.InternalTaskInfo {
-	return &persistence.InternalTaskInfo{
+func toTaskInfo(t *nosqlplugin.TaskRow) *persistence.TaskInfo {
+	return &persistence.TaskInfo{
 		DomainID:        t.DomainID,
 		WorkflowID:      t.WorkflowID,
 		RunID:           t.RunID,

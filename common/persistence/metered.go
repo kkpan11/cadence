@@ -59,10 +59,6 @@ func (r *GetTransferTasksResponse) Len() int {
 	return len(r.Tasks)
 }
 
-func (r *GetCrossClusterTasksResponse) Len() int {
-	return len(r.Tasks)
-}
-
 func (r QueueMessageList) Len() int {
 	return len(r)
 }
@@ -118,6 +114,10 @@ func (r LeaseTaskListRequest) MetricTags() []metrics.Tag {
 }
 
 func (r UpdateTaskListRequest) MetricTags() []metrics.Tag {
+	return []metrics.Tag{metrics.DomainTag(r.DomainName)}
+}
+
+func (r GetTaskListSizeRequest) MetricTags() []metrics.Tag {
 	return []metrics.Tag{metrics.DomainTag(r.DomainName)}
 }
 

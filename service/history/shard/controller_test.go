@@ -27,10 +27,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/cluster"
 	"github.com/uber/cadence/common/dynamicconfig"
@@ -154,9 +154,6 @@ func (s *controllerSuite) TestAcquireShardSuccess() {
 					TransferProcessingQueueStates: &types.ProcessingQueueStates{
 						StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 					},
-					CrossClusterProcessingQueueStates: &types.ProcessingQueueStates{
-						StatesByCluster: make(map[string][]*types.ProcessingQueueState),
-					},
 					TimerProcessingQueueStates: &types.ProcessingQueueStates{
 						StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 					},
@@ -239,9 +236,6 @@ func (s *controllerSuite) TestAcquireShardsConcurrently() {
 						cluster.TestAlternativeClusterName: alternativeClusterTimerAck,
 					},
 					TransferProcessingQueueStates: &types.ProcessingQueueStates{
-						StatesByCluster: make(map[string][]*types.ProcessingQueueState),
-					},
-					CrossClusterProcessingQueueStates: &types.ProcessingQueueStates{
 						StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 					},
 					TimerProcessingQueueStates: &types.ProcessingQueueStates{
@@ -335,9 +329,6 @@ func (s *controllerSuite) TestAcquireShardRenewSuccess() {
 				TransferProcessingQueueStates: &types.ProcessingQueueStates{
 					StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 				},
-				CrossClusterProcessingQueueStates: &types.ProcessingQueueStates{
-					StatesByCluster: make(map[string][]*types.ProcessingQueueState),
-				},
 				TimerProcessingQueueStates: &types.ProcessingQueueStates{
 					StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 				},
@@ -412,9 +403,6 @@ func (s *controllerSuite) TestAcquireShardRenewLookupFailed() {
 					cluster.TestAlternativeClusterName: alternativeClusterTimerAck,
 				},
 				TransferProcessingQueueStates: &types.ProcessingQueueStates{
-					StatesByCluster: make(map[string][]*types.ProcessingQueueState),
-				},
-				CrossClusterProcessingQueueStates: &types.ProcessingQueueStates{
 					StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 				},
 				TimerProcessingQueueStates: &types.ProcessingQueueStates{
@@ -633,9 +621,6 @@ func (s *controllerSuite) setupMocksForAcquireShard(shardID int, mockEngine *eng
 				cluster.TestAlternativeClusterName: alternativeClusterTimerAck,
 			},
 			TransferProcessingQueueStates: &types.ProcessingQueueStates{
-				StatesByCluster: make(map[string][]*types.ProcessingQueueState),
-			},
-			CrossClusterProcessingQueueStates: &types.ProcessingQueueStates{
 				StatesByCluster: make(map[string][]*types.ProcessingQueueState),
 			},
 			TimerProcessingQueueStates: &types.ProcessingQueueStates{

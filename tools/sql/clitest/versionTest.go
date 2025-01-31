@@ -73,10 +73,13 @@ func (s *VersionTestSuite) TestVerifyCompatibleVersion() {
 
 	defer s.createDatabase(database)()
 	defer s.createDatabase(visDatabase)()
-	err := sql.RunTool([]string{
+	mysqlPort, err := environment.GetMySQLPort()
+	s.NoError(err)
+	port := strconv.Itoa(mysqlPort)
+	err = sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database,
@@ -91,7 +94,7 @@ func (s *VersionTestSuite) TestVerifyCompatibleVersion() {
 	err = sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", visDatabase,
@@ -105,7 +108,7 @@ func (s *VersionTestSuite) TestVerifyCompatibleVersion() {
 	s.NoError(err)
 
 	defaultCfg := config.SQL{
-		ConnectAddr:   fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+		ConnectAddr:   fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 		User:          environment.GetMySQLUser(),
 		Password:      environment.GetMySQLPassword(),
 		PluginName:    s.pluginName,
@@ -139,7 +142,7 @@ func (s *VersionTestSuite) TestCheckCompatibleVersion() {
 		{"2.0", "1.0", "version mismatch", false},
 		{"1.0", "1.0", "", false},
 		{"1.0", "2.0", "", false},
-		{"1.0", "abc", "schema_version' doesn't exist", false},
+		{"1.0", "abc", "schema_version' doesn't exist", true},
 	}
 	for _, flag := range flags {
 		s.runCheckCompatibleVersion(flag.expectedVersion, flag.actualVersion, flag.errStr, flag.expectedFail)
@@ -164,10 +167,7 @@ func (s *VersionTestSuite) runCheckCompatibleVersion(
 	database := fmt.Sprintf("version_test_%v", r.Int63())
 	defer s.createDatabase(database)()
 
-	dir := "check_version"
-	tmpDir, err := ioutil.TempDir("", dir)
-	s.NoError(err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := s.T().TempDir()
 
 	subdir := tmpDir + "/" + database
 	s.NoError(os.Mkdir(subdir, os.FileMode(0744)))
@@ -178,26 +178,31 @@ func (s *VersionTestSuite) runCheckCompatibleVersion(
 	}
 
 	sqlFile := subdir + "/v" + actual + "/tmp.sql"
-	s.NoError(sql.RunTool([]string{
+	mysqlPort, err := environment.GetMySQLPort()
+	s.NoError(err)
+	port := strconv.Itoa(mysqlPort)
+
+	err = sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database,
 		"-pl", s.pluginName,
-		"-q",
 		"setup-schema",
 		"-f", sqlFile,
 		"-version", actual,
 		"-o",
-	}))
+	})
 	if expectedFail {
-		os.RemoveAll(subdir + "/v" + actual)
+		s.Error(err)
+	} else {
+		s.NoError(err)
 	}
 
 	cfg := config.SQL{
-		ConnectAddr:   fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+		ConnectAddr:   fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 		User:          environment.GetMySQLUser(),
 		Password:      environment.GetMySQLPassword(),
 		PluginName:    s.pluginName,
@@ -229,10 +234,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionInCompatible() {
 	defer s.createDatabase(database1)()
 	defer s.createDatabase(database2)()
 
-	dir := "check_version"
-	tmpDir, err := ioutil.TempDir("", dir)
-	s.NoError(err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := s.T().TempDir()
 
 	subdir := tmpDir + "/" + "db"
 	s.NoError(os.Mkdir(subdir, os.FileMode(0744)))
@@ -240,11 +242,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionInCompatible() {
 	s.createSchemaForVersion(subdir, "0.1")
 	s.createSchemaForVersion(subdir, "0.2")
 	s.createSchemaForVersion(subdir, "0.3")
-
+	mysqlPort, err := environment.GetMySQLPort()
+	s.NoError(err)
+	port := strconv.Itoa(mysqlPort)
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database1,
@@ -258,7 +262,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionInCompatible() {
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database2,
@@ -277,13 +281,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionInCompatible() {
 		NumShards:            2,
 		MultipleDatabasesConfig: []config.MultipleDatabasesConfigEntry{
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database1,
 			},
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database2,
@@ -303,10 +307,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionAllLowerCompatible() {
 	defer s.createDatabase(database1)()
 	defer s.createDatabase(database2)()
 
-	dir := "check_version"
-	tmpDir, err := ioutil.TempDir("", dir)
-	s.NoError(err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := s.T().TempDir()
 
 	subdir := tmpDir + "/" + "db"
 	s.NoError(os.Mkdir(subdir, os.FileMode(0744)))
@@ -314,11 +315,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionAllLowerCompatible() {
 	s.createSchemaForVersion(subdir, "0.1")
 	s.createSchemaForVersion(subdir, "0.2")
 	s.createSchemaForVersion(subdir, "0.3")
-
+	mysqlPort, err := environment.GetMySQLPort()
+	s.NoError(err)
+	port := strconv.Itoa(mysqlPort)
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database1,
@@ -332,7 +335,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionAllLowerCompatible() {
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database2,
@@ -351,13 +354,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionAllLowerCompatible() {
 		NumShards:            2,
 		MultipleDatabasesConfig: []config.MultipleDatabasesConfigEntry{
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database1,
 			},
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database2,
@@ -376,10 +379,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionPartialLowerCompatible() {
 	defer s.createDatabase(database1)()
 	defer s.createDatabase(database2)()
 
-	dir := "check_version"
-	tmpDir, err := ioutil.TempDir("", dir)
-	s.NoError(err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := s.T().TempDir()
 
 	subdir := tmpDir + "/" + "db"
 	s.NoError(os.Mkdir(subdir, os.FileMode(0744)))
@@ -387,11 +387,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionPartialLowerCompatible() {
 	s.createSchemaForVersion(subdir, "0.1")
 	s.createSchemaForVersion(subdir, "0.2")
 	s.createSchemaForVersion(subdir, "0.3")
-
+	mysqlPort, err := environment.GetMySQLPort()
+	s.NoError(err)
+	port := strconv.Itoa(mysqlPort)
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database1,
@@ -405,7 +407,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionPartialLowerCompatible() {
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database2,
@@ -424,13 +426,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionPartialLowerCompatible() {
 		NumShards:            2,
 		MultipleDatabasesConfig: []config.MultipleDatabasesConfigEntry{
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database1,
 			},
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database2,
@@ -449,10 +451,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionExactlyMatchCompatible() {
 	defer s.createDatabase(database1)()
 	defer s.createDatabase(database2)()
 
-	dir := "check_version"
-	tmpDir, err := ioutil.TempDir("", dir)
-	s.NoError(err)
-	defer os.RemoveAll(tmpDir)
+	tmpDir := s.T().TempDir()
 
 	subdir := tmpDir + "/" + "db"
 	s.NoError(os.Mkdir(subdir, os.FileMode(0744)))
@@ -460,11 +459,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionExactlyMatchCompatible() {
 	s.createSchemaForVersion(subdir, "0.1")
 	s.createSchemaForVersion(subdir, "0.2")
 	s.createSchemaForVersion(subdir, "0.3")
-
+	mysqlPort, err := environment.GetMySQLPort()
+	s.NoError(err)
+	port := strconv.Itoa(mysqlPort)
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database1,
@@ -478,7 +479,7 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionExactlyMatchCompatible() {
 	s.NoError(sql.RunTool([]string{
 		"./tool",
 		"-ep", environment.GetMySQLAddress(),
-		"-p", strconv.Itoa(environment.GetMySQLPort()),
+		"-p", port,
 		"-u", environment.GetMySQLUser(),
 		"-pw", environment.GetMySQLPassword(),
 		"-db", database2,
@@ -497,13 +498,13 @@ func (s *VersionTestSuite) TestMultipleDatabaseVersionExactlyMatchCompatible() {
 		NumShards:            2,
 		MultipleDatabasesConfig: []config.MultipleDatabasesConfigEntry{
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database1,
 			},
 			{
-				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), environment.GetMySQLPort()),
+				ConnectAddr:  fmt.Sprintf("%v:%v", environment.GetMySQLAddress(), port),
 				User:         environment.GetMySQLUser(),
 				Password:     environment.GetMySQLPassword(),
 				DatabaseName: database2,

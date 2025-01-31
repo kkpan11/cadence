@@ -20,6 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination generic_client_mock.go -self_package github.com/uber/cadence/common/pinot
+
 package pinot
 
 import p "github.com/uber/cadence/common/persistence"
@@ -30,6 +32,7 @@ type (
 		// Search API is only for supporting various List[Open/Closed]WorkflowExecutions(ByXyz).
 		// Use SearchByQuery or ScanByQuery for generic purpose searching.
 		Search(request *SearchRequest) (*SearchResponse, error)
+		SearchAggr(request *SearchRequest) (AggrResponse, error)
 		// CountByQuery is for returning the count of workflow executions that match the query
 		CountByQuery(query string) (int64, error)
 		GetTableName() string
@@ -49,4 +52,5 @@ type (
 
 	// SearchResponse is a response to Search, SearchByQuery and ScanByQuery
 	SearchResponse = p.InternalListWorkflowExecutionsResponse
+	AggrResponse   [][]interface{}
 )

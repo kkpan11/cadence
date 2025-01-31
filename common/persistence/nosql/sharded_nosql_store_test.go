@@ -21,11 +21,12 @@
 package nosql
 
 import (
+	"errors"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	. "github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/common/log"
@@ -66,10 +67,7 @@ func TestShardedNosqlStoreTestSuite(t *testing.T) {
 }
 
 func (s *shardedNosqlStoreTestSuite) TestValidConfiguration() {
-	cfg := getValidShardedNoSQLConfig()
-
-	store, err := newShardedNosqlStore(cfg, log.NewNoop(), nil)
-	s.NoError(err)
+	store := s.newShardedStoreForTest()
 	s.Equal(1, len(store.connectedShards))
 	s.Contains(store.connectedShards, "shard-1")
 	s.Equal(store.GetDefaultShard(), store.defaultShard)
@@ -81,7 +79,9 @@ func (s *shardedNosqlStoreTestSuite) TestValidConfiguration() {
 
 func (s *shardedNosqlStoreTestSuite) TestStoreSelectionForHistoryShard() {
 	mockDB1 := nosqlplugin.NewMockDB(s.mockController)
+	mockDB1.EXPECT().Close().Times(1)
 	mockDB2 := nosqlplugin.NewMockDB(s.mockController)
+	mockDB2.EXPECT().Close().Times(1)
 
 	mockPlugin := nosqlplugin.NewMockPlugin(s.mockController)
 	gomock.InOrder(
@@ -90,15 +90,17 @@ func (s *shardedNosqlStoreTestSuite) TestStoreSelectionForHistoryShard() {
 			Return(mockDB1, nil),
 		mockPlugin.EXPECT().
 			CreateDB(gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(nil, errors.New("error creating db")),
+		mockPlugin.EXPECT().
+			CreateDB(gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(mockDB2, nil),
 	)
 	delete(supportedPlugins, "cassandra")
 	RegisterPlugin("cassandra", mockPlugin)
 
-	cfg := getValidShardedNoSQLConfig()
+	store := s.newShardedStoreForTest()
+	defer store.Close()
 
-	store, err := newShardedNosqlStore(cfg, log.NewNoop(), nil)
-	s.NoError(err)
 	s.Equal(1, len(store.connectedShards))
 	s.True(mockDB1 == store.defaultShard.db)
 
@@ -114,8 +116,13 @@ func (s *shardedNosqlStoreTestSuite) TestStoreSelectionForHistoryShard() {
 	s.Equal(1, len(store.connectedShards))
 	s.True(mockDB1 == storeShard1.db)
 
-	// Getting a new shard should create a new connection
+	// Getting a new shard should create a new connection but it will fail on first attempt
 	storeShard2, err := store.GetStoreShardByHistoryShard(1)
+	s.Error(err)
+	s.Equal(1, len(store.connectedShards))
+
+	// Getting a new shard should create a new connection on second attempt
+	storeShard2, err = store.GetStoreShardByHistoryShard(1)
 	s.NoError(err)
 	s.Equal(2, len(store.connectedShards))
 	s.True(mockDB2 == storeShard2.db)
@@ -142,9 +149,23 @@ func (s *shardedNosqlStoreTestSuite) TestStoreSelectionForHistoryShard() {
 	s.True(mockDB2 == storeShard2.db)
 }
 
+func (s *shardedNosqlStoreTestSuite) newShardedStoreForTest() *shardedNosqlStoreImpl {
+	cfg := getValidShardedNoSQLConfig()
+	logger := log.NewNoop()
+	storeInterface, err := newShardedNosqlStore(cfg, logger, nil)
+	s.NoError(err)
+	s.Equal("shardedNosql", storeInterface.GetName())
+	s.Equal(logger, storeInterface.GetLogger())
+	store := storeInterface.(*shardedNosqlStoreImpl)
+	s.Equal(storeInterface.GetShardingPolicy(), store.shardingPolicy)
+	return store
+}
+
 func (s *shardedNosqlStoreTestSuite) TestStoreSelectionForTasklist() {
 	mockDB1 := nosqlplugin.NewMockDB(s.mockController)
+	mockDB1.EXPECT().Close().Times(1)
 	mockDB2 := nosqlplugin.NewMockDB(s.mockController)
+	mockDB2.EXPECT().Close().Times(1)
 
 	mockPlugin := nosqlplugin.NewMockPlugin(s.mockController)
 	gomock.InOrder(
@@ -158,10 +179,9 @@ func (s *shardedNosqlStoreTestSuite) TestStoreSelectionForTasklist() {
 	delete(supportedPlugins, "cassandra")
 	RegisterPlugin("cassandra", mockPlugin)
 
-	cfg := getValidShardedNoSQLConfig()
+	store := s.newShardedStoreForTest()
+	defer store.Close()
 
-	store, err := newShardedNosqlStore(cfg, log.NewNoop(), nil)
-	s.NoError(err)
 	s.Equal(1, len(store.connectedShards))
 	s.True(mockDB1 == store.defaultShard.db)
 

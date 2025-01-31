@@ -40,7 +40,7 @@ func TestConstantSuite(t *testing.T) {
 }
 
 func (s *constantSuite) TestListAllProductionKeys() {
-	//check if we given enough capacity
+	// check if we given enough capacity
 	testResult := ListAllProductionKeys()
 	s.GreaterOrEqual(len(IntKeys)+len(BoolKeys)+len(FloatKeys)+len(StringKeys)+len(DurationKeys)+len(MapKeys), len(testResult))
 	s.Equal(TestGetIntPropertyFilteredByTaskListInfoKey+1, testResult[0])
@@ -156,13 +156,6 @@ func (s *constantSuite) TestBoolKey() {
 			expectedDefaultValue: false,
 			expectedFilters:      nil,
 		},
-		"EnableReadVisibilityFromES": {
-			key:                  EnableReadVisibilityFromES,
-			expectedString:       "system.enableReadVisibilityFromES",
-			expectedDescription:  "EnableReadVisibilityFromES is key for enable read from elastic search or db visibility, usually using with AdvancedVisibilityWritingMode for seamless migration from db visibility to advanced visibility",
-			expectedDefaultValue: true,
-			expectedFilters:      []Filter{DomainName},
-		},
 		"FrontendEmitSignalNameMetricsTag": {
 			key:                  FrontendEmitSignalNameMetricsTag,
 			expectedString:       "frontend.emitSignalNameMetricsTag",
@@ -245,6 +238,13 @@ func (s *constantSuite) TestStringKey() {
 			Filters:      []Filter{DomainName},
 			Description:  "DefaultEventEncoding is the encoding type for history events",
 			DefaultValue: string(common.EncodingTypeThriftRW),
+		},
+		"ReadVisibilityStoreName": {
+			Key:          ReadVisibilityStoreName,
+			KeyName:      "system.readVisibilityStoreName",
+			Filters:      []Filter{DomainName},
+			Description:  "ReadVisibilityStoreName is key to identify which store to read visibility data from",
+			DefaultValue: "es",
 		},
 	}
 

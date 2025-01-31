@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/uber/cadence/.gen/go/shared"
 	"github.com/uber/cadence/common/types"
 )
 
@@ -34,7 +35,7 @@ import (
 //   1. Workflow: these tags are information that are useful to our customer, like workflow-id/run-id/task-list/...
 //   2. System : these tags are internal information which usually cannot be understood by our customers,
 
-///////////////////  Common tags defined here ///////////////////
+// /////////////////  Common tags defined here ///////////////////
 
 // Error returns tag for Error
 func Error(err error) Tag {
@@ -59,7 +60,7 @@ func LatestTime(time int64) Tag {
 	return newInt64("latest-time", time)
 }
 
-///////////////////  Workflow tags defined here: ( wf is short for workflow) ///////////////////
+// /////////////////  Workflow tags defined here: ( wf is short for workflow) ///////////////////
 
 // WorkflowAction returns tag for WorkflowAction
 func workflowAction(action string) Tag {
@@ -93,6 +94,11 @@ func WorkflowTimeoutType(timeoutType int64) Tag {
 	return newInt64("wf-timeout-type", timeoutType)
 }
 
+// ActivityTimeoutType returns tag for ActivityTimeoutType
+func ActivityTimeoutType(timerType shared.TimeoutType) Tag {
+	return newStringTag("activity-timer-type", timerType.String())
+}
+
 // WorkflowPollContextTimeout returns tag for WorkflowPollContextTimeout
 func WorkflowPollContextTimeout(pollContextTimeout time.Duration) Tag {
 	return newDurationTag("wf-poll-context-timeout", pollContextTimeout)
@@ -121,6 +127,11 @@ func WorkflowType(wfType string) Tag {
 // WorkflowSignalName returns tag for WorkflowSignalName
 func WorkflowSignalName(signalName string) Tag {
 	return newStringTag("wf-signal-name", signalName)
+}
+
+// WorkflowRequestID returns tag for WorkflowRequestID
+func WorkflowRequestID(requestID string) Tag {
+	return newStringTag("wf-request-id", requestID)
 }
 
 // WorkflowState returns tag for WorkflowState
@@ -201,6 +212,11 @@ func WorkflowCloseStatus(status int) Tag {
 // IsWorkflowOpen returns a tag to report a workflow is open or not
 func IsWorkflowOpen(isOpen bool) Tag {
 	return newBoolTag("is-workflow-open", isOpen)
+}
+
+// WorkflowTerminationReason returns a tag to report a workflow's termination reason
+func WorkflowTerminationReason(reason string) Tag {
+	return newStringTag("wf-termination-reason", reason)
 }
 
 // domain related
@@ -342,7 +358,7 @@ func WorkflowEventType(eventType string) Tag {
 	return newStringTag("wf-event-type", eventType)
 }
 
-///////////////////  System tags defined here:  ///////////////////
+// /////////////////  System tags defined here:  ///////////////////
 // Tags with pre-define values
 
 // component returns tag for component
@@ -392,6 +408,11 @@ func Service(sv string) Tag {
 	return newStringTag("service", sv)
 }
 
+// DestService returns tag for destination service
+func DestService(sv string) Tag {
+	return newStringTag("dest-service", sv)
+}
+
 // Addresses returns tag for Addresses
 func Addresses(ads []string) Tag {
 	return newObjectTag("addresses", ads)
@@ -420,6 +441,11 @@ func Key(k string) Tag {
 // Name returns tag for Name
 func Name(k string) Tag {
 	return newStringTag("name", k)
+}
+
+// Mode returns tag for Mode
+func Mode(mode string) Tag {
+	return newStringTag("mode", mode)
 }
 
 // Value returns tag for Value
@@ -753,7 +779,7 @@ func TokenLastEventID(id int64) Tag {
 	return newInt64("token-last-event-id", id)
 }
 
-///////////////////  XDC tags defined here: xdc- ///////////////////
+// /////////////////  XDC tags defined here: xdc- ///////////////////
 
 // SourceCluster returns tag for SourceCluster
 func SourceCluster(sourceCluster string) Tag {
@@ -824,7 +850,7 @@ func ResponseMaxSize(size int) Tag {
 	return newInt("response-max-size", size)
 }
 
-///////////////////  Archival tags defined here: archival- ///////////////////
+// /////////////////  Archival tags defined here: archival- ///////////////////
 // archival request tags
 
 // ArchivalCallerServiceName returns tag for the service name calling archival client
@@ -940,6 +966,12 @@ func VisibilityQuery(query string) Tag {
 	return newStringTag("visibility-query", query)
 }
 
+// MembershipChangeEvent is a predefined tag for when logging hashring change events,
+// expected to be of type membership.ChangeEvent
+func MembershipChangeEvent(event interface{}) Tag {
+	return newPredefinedDynamicTag("membership-change-event", event)
+}
+
 // Dynamic Uses reflection based logging for arbitrary values
 // for not very performant logging
 func Dynamic(key string, v interface{}) Tag {
@@ -948,6 +980,14 @@ func Dynamic(key string, v interface{}) Tag {
 
 func IsolationGroup(group string) Tag {
 	return newStringTag("isolation-group", group)
+}
+
+func TaskLatency(duration time.Duration) Tag {
+	return newDurationTag("task-latency", duration)
+}
+
+func IsolationDuration(duration time.Duration) Tag {
+	return newDurationTag("isolation-duration", duration)
 }
 
 func PartitionConfig(p map[string]string) Tag {
@@ -972,4 +1012,72 @@ func WorkflowIDCacheSize(size int) Tag {
 
 func AsyncWFQueueID(queueID string) Tag {
 	return newStringTag("async-wf-queue-id", queueID)
+}
+
+func GlobalRatelimiterKey(globalKey string) Tag {
+	return newStringTag("global-ratelimit-key", globalKey)
+}
+func GlobalRatelimiterKeyMode(mode string) Tag {
+	return newStringTag("global-ratelimit-key-mode", mode)
+}
+func GlobalRatelimiterIdleCount(count int) Tag {
+	return newInt("global-ratelimit-key-idle-count", count)
+}
+func GlobalRatelimiterCollectionName(name string) Tag {
+	return newStringTag("global-ratelimit-collection", name)
+}
+func GlobalRatelimiterPeer(peer string) Tag {
+	return newStringTag("global-ratelimit-peer", peer)
+}
+
+func CurrentQPS(qps float64) Tag {
+	return newFloat64Tag("current-qps", qps)
+}
+
+func NumReadPartitions(n int32) Tag {
+	return newInt32("num-read-partitions", n)
+}
+
+func NumWritePartitions(n int32) Tag {
+	return newInt32("num-write-partitions", n)
+}
+
+func CurrentNumReadPartitions(n int32) Tag {
+	return newInt32("current-num-read-partitions", n)
+}
+
+func CurrentNumWritePartitions(n int32) Tag {
+	return newInt32("current-num-write-partitions", n)
+}
+
+func PartitionUpscaleThreshold(qps float64) Tag {
+	return newFloat64Tag("partition-upscale-threshold", qps)
+}
+
+func PartitionDownscaleThreshold(qps float64) Tag {
+	return newFloat64Tag("partition-downscale-threshold", qps)
+}
+
+func PartitionDownscaleFactor(qps float64) Tag {
+	return newFloat64Tag("partition-downscale-factor", qps)
+}
+
+func MatchingTaskID(id int64) Tag {
+	return newInt64("matching-task-id", id)
+}
+
+func MatchingTaskScheduleID(id int64) Tag {
+	return newInt64("matching-task-schedule-id", id)
+}
+
+func DecisionTaskState(state int32) Tag {
+	return newInt32("decision-task-state", state)
+}
+
+func ActivityTaskState(state int32) Tag {
+	return newInt32("activity-task-state", state)
+}
+
+func Namespace(name string) Tag {
+	return newStringTag("namespace", name)
 }

@@ -21,14 +21,21 @@
 package frontend
 
 import (
+	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/multierr"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/client"
 	"github.com/uber/cadence/common/domain"
 	"github.com/uber/cadence/common/dynamicconfig"
+	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/quotas"
+	"github.com/uber/cadence/common/quotas/global/collection"
+	"github.com/uber/cadence/common/quotas/permember"
 	"github.com/uber/cadence/common/resource"
 	"github.com/uber/cadence/common/service"
 	"github.com/uber/cadence/service/frontend/admin"
@@ -40,18 +47,20 @@ import (
 	"github.com/uber/cadence/service/frontend/wrappers/metered"
 	"github.com/uber/cadence/service/frontend/wrappers/ratelimited"
 	"github.com/uber/cadence/service/frontend/wrappers/thrift"
+	"github.com/uber/cadence/service/frontend/wrappers/versioncheck"
 )
 
 // Service represents the cadence-frontend service
 type Service struct {
 	resource.Resource
 
-	status       int32
-	handler      *api.WorkflowHandler
-	adminHandler admin.Handler
-	stopC        chan struct{}
-	config       *config.Config
-	params       *resource.Params
+	status                 int32
+	handler                *api.WorkflowHandler
+	adminHandler           admin.Handler
+	stopC                  chan struct{}
+	config                 *config.Config
+	params                 *resource.Params
+	ratelimiterCollections globalRatelimiterCollections
 }
 
 // NewService builds a new cadence-frontend service
@@ -70,7 +79,6 @@ func NewService(
 		isAdvancedVisExistInConfig,
 		params.HostName,
 	)
-	params.PersistenceConfig.HistoryMaxConns = serviceConfig.HistoryMgrNumConns()
 
 	serviceResource, err := resource.New(
 		params,
@@ -80,10 +88,9 @@ func NewService(
 			PersistenceGlobalMaxQPS: serviceConfig.PersistenceGlobalMaxQPS,
 			ThrottledLoggerMaxRPS:   serviceConfig.ThrottledLogRPS,
 
-			EnableReadVisibilityFromES:      serviceConfig.EnableReadVisibilityFromES,
-			AdvancedVisibilityWritingMode:   nil, // frontend service never write
-			EnableReadVisibilityFromPinot:   serviceConfig.EnableReadVisibilityFromPinot,
+			WriteVisibilityStoreName:        nil, // frontend service never write
 			EnableLogCustomerQueryParameter: serviceConfig.EnableLogCustomerQueryParameter,
+			ReadVisibilityStoreName:         serviceConfig.ReadVisibilityStoreName,
 
 			EnableDBVisibilitySampling:                  serviceConfig.EnableVisibilitySampling,
 			EnableReadDBVisibilityFromClosedExecutionV2: serviceConfig.EnableReadFromClosedExecutionV2,
@@ -91,9 +98,10 @@ func NewService(
 			WriteDBVisibilityOpenMaxQPS:                 nil, // frontend service never write
 			WriteDBVisibilityClosedMaxQPS:               nil, // frontend service never write
 
-			ESVisibilityListMaxQPS: serviceConfig.ESVisibilityListMaxQPS,
-			ESIndexMaxResultWindow: serviceConfig.ESIndexMaxResultWindow,
-			ValidSearchAttributes:  serviceConfig.ValidSearchAttributes,
+			ESVisibilityListMaxQPS:   serviceConfig.ESVisibilityListMaxQPS,
+			ESIndexMaxResultWindow:   serviceConfig.ESIndexMaxResultWindow,
+			ValidSearchAttributes:    serviceConfig.ValidSearchAttributes,
+			IsErrorRetryableFunction: common.FrontendRetry,
 		},
 	)
 	if err != nil {
@@ -133,44 +141,18 @@ func (s *Service) Start() {
 	// Base handler
 	s.handler = api.NewWorkflowHandler(s, s.config, client.NewVersionChecker(), dh)
 
-	userRateLimiter := quotas.NewMultiStageRateLimiter(
-		quotas.NewDynamicRateLimiter(s.config.UserRPS.AsFloat64()),
-		quotas.NewCollection(quotas.NewPerMemberDynamicRateLimiterFactory(
-			service.Frontend,
-			s.config.GlobalDomainUserRPS,
-			s.config.MaxDomainUserRPSPerInstance,
-			s.GetMembershipResolver(),
-		)),
-	)
-	workerRateLimiter := quotas.NewMultiStageRateLimiter(
-		quotas.NewDynamicRateLimiter(s.config.WorkerRPS.AsFloat64()),
-		quotas.NewCollection(quotas.NewPerMemberDynamicRateLimiterFactory(
-			service.Frontend,
-			s.config.GlobalDomainWorkerRPS,
-			s.config.MaxDomainWorkerRPSPerInstance,
-			s.GetMembershipResolver(),
-		)),
-	)
-	visibilityRateLimiter := quotas.NewMultiStageRateLimiter(
-		quotas.NewDynamicRateLimiter(s.config.VisibilityRPS.AsFloat64()),
-		quotas.NewCollection(quotas.NewPerMemberDynamicRateLimiterFactory(
-			service.Frontend,
-			s.config.GlobalDomainVisibilityRPS,
-			s.config.MaxDomainVisibilityRPSPerInstance,
-			s.GetMembershipResolver(),
-		)),
-	)
-	asyncRateLimiter := quotas.NewMultiStageRateLimiter(
-		quotas.NewDynamicRateLimiter(s.config.AsyncRPS.AsFloat64()),
-		quotas.NewCollection(quotas.NewPerMemberDynamicRateLimiterFactory(
-			service.Frontend,
-			s.config.GlobalDomainAsyncRPS,
-			s.config.MaxDomainAsyncRPSPerInstance,
-			s.GetMembershipResolver(),
-		)),
-	)
+	collections, err := s.createGlobalQuotaCollections()
+	if err != nil {
+		logger.Fatal("constructing ratelimiter collections", tag.Error(err))
+	}
+	userRateLimiter := quotas.NewMultiStageRateLimiter(quotas.NewDynamicRateLimiter(s.config.UserRPS.AsFloat64()), collections.user)
+	workerRateLimiter := quotas.NewMultiStageRateLimiter(quotas.NewDynamicRateLimiter(s.config.WorkerRPS.AsFloat64()), collections.worker)
+	visibilityRateLimiter := quotas.NewMultiStageRateLimiter(quotas.NewDynamicRateLimiter(s.config.VisibilityRPS.AsFloat64()), collections.visibility)
+	asyncRateLimiter := quotas.NewMultiStageRateLimiter(quotas.NewDynamicRateLimiter(s.config.AsyncRPS.AsFloat64()), collections.async)
+
 	// Additional decorations
 	var handler api.Handler = s.handler
+	handler = versioncheck.NewAPIHandler(handler, s.config, client.NewVersionChecker())
 	handler = ratelimited.NewAPIHandler(handler, s.GetDomainCache(), userRateLimiter, workerRateLimiter, visibilityRateLimiter, asyncRateLimiter)
 	handler = metered.NewAPIHandler(handler, s.GetLogger(), s.GetMetricsClient(), s.GetDomainCache(), s.config)
 	if s.params.ClusterRedirectionPolicy != nil {
@@ -196,6 +178,24 @@ func (s *Service) Start() {
 
 	// must start resource first
 	s.Resource.Start()
+
+	startCtx, cancel := context.WithTimeout(context.Background(), time.Second) // should take nearly no time at all
+	defer cancel()
+	if err := collections.user.OnStart(startCtx); err != nil {
+		logger.Fatal("failed to start user global ratelimiter collection", tag.Error(err))
+	}
+	if err := collections.worker.OnStart(startCtx); err != nil {
+		logger.Fatal("failed to start worker global ratelimiter collection", tag.Error(err))
+	}
+	if err := collections.visibility.OnStart(startCtx); err != nil {
+		logger.Fatal("failed to start visibility global ratelimiter collection", tag.Error(err))
+	}
+	if err := collections.async.OnStart(startCtx); err != nil {
+		logger.Fatal("failed to start async global ratelimiter collection", tag.Error(err))
+	}
+	cancel()
+	s.ratelimiterCollections = collections // save so they can be stopped later
+
 	s.handler.Start()
 	s.adminHandler.Start()
 
@@ -204,6 +204,78 @@ func (s *Service) Start() {
 	logger.Info("frontend started")
 
 	<-s.stopC
+}
+
+type globalRatelimiterCollections struct {
+	user, worker, visibility, async *collection.Collection
+}
+
+// ratelimiterCollections contains the "base" ratelimiters that make up both:
+// - "local" limits, which do not use global-load-balancing to adjust to request load
+// - fallbacks within "global" limits, for when the global-load information cannot be retrieved (startup, errors, etc)
+type ratelimiterCollections struct {
+	user, worker, visibility, async *quotas.Collection
+}
+
+func (s *Service) createGlobalQuotaCollections() (globalRatelimiterCollections, error) {
+	create := func(name string, local, global *quotas.Collection, targetRPS dynamicconfig.IntPropertyFnWithDomainFilter) (*collection.Collection, error) {
+		c, err := collection.New(
+			name,
+			local,
+			global,
+			s.config.GlobalRatelimiterUpdateInterval,
+			targetRPS,
+			s.config.GlobalRatelimiterKeyMode,
+			s.GetRatelimiterAggregatorsClient(),
+			s.GetLogger(),
+			s.GetMetricsClient(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error creating %v collection: %w", name, err)
+		}
+		return c, nil
+	}
+	var combinedErr error
+
+	// to safely shadow global ratelimits, we must make duplicate *quota.Collection collections
+	// so they do not share data when the global limiter decides to use its local fallback.
+	// these are then combined into the global/algorithm.Collection to handle all limiting calls
+	local, global := s.createBaseLimiters(), s.createBaseLimiters()
+
+	user, err := create("user", local.user, global.user, s.config.GlobalDomainUserRPS)
+	combinedErr = multierr.Combine(combinedErr, err)
+
+	worker, err := create("worker", local.worker, global.worker, s.config.GlobalDomainWorkerRPS)
+	combinedErr = multierr.Combine(combinedErr, err)
+
+	visibility, err := create("visibility", local.visibility, global.visibility, s.config.GlobalDomainVisibilityRPS)
+	combinedErr = multierr.Combine(combinedErr, err)
+
+	async, err := create("async", local.async, global.async, s.config.GlobalDomainAsyncRPS)
+	combinedErr = multierr.Combine(combinedErr, err)
+
+	return globalRatelimiterCollections{
+		user:       user,
+		worker:     worker,
+		visibility: visibility,
+		async:      async,
+	}, combinedErr
+}
+func (s *Service) createBaseLimiters() ratelimiterCollections {
+	create := func(shared, perInstance dynamicconfig.IntPropertyFnWithDomainFilter) *quotas.Collection {
+		return quotas.NewCollection(permember.NewPerMemberDynamicRateLimiterFactory(
+			service.Frontend,
+			shared,
+			perInstance,
+			s.GetMembershipResolver(),
+		))
+	}
+	return ratelimiterCollections{
+		user:       create(s.config.GlobalDomainUserRPS, s.config.MaxDomainUserRPSPerInstance),
+		worker:     create(s.config.GlobalDomainWorkerRPS, s.config.MaxDomainWorkerRPSPerInstance),
+		visibility: create(s.config.GlobalDomainVisibilityRPS, s.config.MaxDomainVisibilityRPSPerInstance),
+		async:      create(s.config.GlobalDomainAsyncRPS, s.config.MaxDomainAsyncRPSPerInstance),
+	}
 }
 
 // Stop stops the service
@@ -230,6 +302,22 @@ func (s *Service) Stop() {
 
 	s.handler.Stop()
 	s.adminHandler.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second) // should take nearly no time at all
+	defer cancel()
+	if err := s.ratelimiterCollections.user.OnStop(ctx); err != nil {
+		s.GetLogger().Error("failed to stop user global ratelimiter collection", tag.Error(err))
+	}
+	if err := s.ratelimiterCollections.worker.OnStop(ctx); err != nil {
+		s.GetLogger().Error("failed to stop worker global ratelimiter collection", tag.Error(err))
+	}
+	if err := s.ratelimiterCollections.visibility.OnStop(ctx); err != nil {
+		s.GetLogger().Error("failed to stop visibility global ratelimiter collection", tag.Error(err))
+	}
+	if err := s.ratelimiterCollections.async.OnStop(ctx); err != nil {
+		s.GetLogger().Error("failed to stop async global ratelimiter collection", tag.Error(err))
+	}
+	cancel()
 
 	s.GetLogger().Info("ShutdownHandler: Draining traffic")
 	time.Sleep(requestDrainTime)

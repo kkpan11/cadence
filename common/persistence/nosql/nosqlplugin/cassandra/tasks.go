@@ -70,16 +70,47 @@ func (db *cdb) SelectTaskList(ctx context.Context, filter *nosqlplugin.TaskListF
 		TaskListName: filter.TaskListName,
 		TaskListType: filter.TaskListType,
 
-		TaskListKind:    taskListKind,
-		LastUpdatedTime: lastUpdatedTime,
-		AckLevel:        ackLevel,
-		RangeID:         rangeID,
+		TaskListKind:            taskListKind,
+		LastUpdatedTime:         lastUpdatedTime,
+		AckLevel:                ackLevel,
+		RangeID:                 rangeID,
+		AdaptivePartitionConfig: toTaskListPartitionConfig(tlDB["adaptive_partition_config"]),
 	}, nil
+}
+
+func toTaskListPartitionConfig(v interface{}) *persistence.TaskListPartitionConfig {
+	if v == nil {
+		return nil
+	}
+	partition := v.(map[string]interface{})
+	if len(partition) == 0 {
+		return nil
+	}
+	version := partition["version"].(int64)
+	numRead := partition["num_read_partitions"].(int)
+	numWrite := partition["num_write_partitions"].(int)
+	return &persistence.TaskListPartitionConfig{
+		Version:            version,
+		NumReadPartitions:  numRead,
+		NumWritePartitions: numWrite,
+	}
+}
+
+func fromTaskListPartitionConfig(config *persistence.TaskListPartitionConfig) map[string]interface{} {
+	if config == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"version":              config.Version,
+		"num_read_partitions":  config.NumReadPartitions,
+		"num_write_partitions": config.NumWritePartitions,
+	}
 }
 
 // InsertTaskList insert a single tasklist row
 // Return TaskOperationConditionFailure if the condition doesn't meet
 func (db *cdb) InsertTaskList(ctx context.Context, row *nosqlplugin.TaskListRow) error {
+	timeStamp := db.timeSrc.Now()
 	query := db.session.Query(templateInsertTaskListQuery,
 		row.DomainID,
 		row.TaskListName,
@@ -93,6 +124,8 @@ func (db *cdb) InsertTaskList(ctx context.Context, row *nosqlplugin.TaskListRow)
 		0,
 		row.TaskListKind,
 		row.LastUpdatedTime,
+		fromTaskListPartitionConfig(row.AdaptivePartitionConfig),
+		timeStamp,
 	).WithContext(ctx)
 
 	previous := make(map[string]interface{})
@@ -111,6 +144,7 @@ func (db *cdb) UpdateTaskList(
 	row *nosqlplugin.TaskListRow,
 	previousRangeID int64,
 ) error {
+	timeStamp := db.timeSrc.Now()
 	query := db.session.Query(templateUpdateTaskListQuery,
 		row.RangeID,
 		row.DomainID,
@@ -119,6 +153,8 @@ func (db *cdb) UpdateTaskList(
 		row.AckLevel,
 		row.TaskListKind,
 		row.LastUpdatedTime,
+		fromTaskListPartitionConfig(row.AdaptivePartitionConfig),
+		timeStamp,
 		row.DomainID,
 		row.TaskListName,
 		row.TaskListType,
@@ -162,6 +198,7 @@ func (db *cdb) UpdateTaskListWithTTL(
 	row *nosqlplugin.TaskListRow,
 	previousRangeID int64,
 ) error {
+	timeStamp := db.timeSrc.Now()
 	batch := db.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	// part 1 is used to set TTL on primary key as UPDATE can't set TTL for primary key
 	batch.Query(templateUpdateTaskListQueryWithTTLPart1,
@@ -170,6 +207,7 @@ func (db *cdb) UpdateTaskListWithTTL(
 		row.TaskListType,
 		rowTypeTaskList,
 		taskListTaskID,
+		timeStamp,
 		ttlSeconds,
 	)
 	// part 2 is for CAS and setting TTL for the rest of the columns
@@ -181,7 +219,9 @@ func (db *cdb) UpdateTaskListWithTTL(
 		row.TaskListType,
 		row.AckLevel,
 		row.TaskListKind,
-		time.Now(),
+		timeStamp,
+		fromTaskListPartitionConfig(row.AdaptivePartitionConfig),
+		timeStamp,
 		row.DomainID,
 		row.TaskListName,
 		row.TaskListType,
@@ -242,6 +282,7 @@ func (db *cdb) InsertTasks(
 	domainID := tasklistCondition.DomainID
 	taskListName := tasklistCondition.TaskListName
 	taskListType := tasklistCondition.TaskListType
+	timeStamp := db.timeSrc.Now()
 
 	for _, task := range tasksToInsert {
 		scheduleID := task.ScheduledID
@@ -258,7 +299,9 @@ func (db *cdb) InsertTasks(
 				task.RunID,
 				scheduleID,
 				task.CreatedTime,
-				task.PartitionConfig)
+				task.PartitionConfig,
+				timeStamp,
+			)
 		} else {
 			if ttl > maxCassandraTTL {
 				ttl = maxCassandraTTL
@@ -275,6 +318,7 @@ func (db *cdb) InsertTasks(
 				scheduleID,
 				task.CreatedTime,
 				task.PartitionConfig,
+				timeStamp,
 				ttl)
 		}
 	}
@@ -282,6 +326,7 @@ func (db *cdb) InsertTasks(
 	// The following query is used to ensure that range_id didn't change
 	batch.Query(templateUpdateTaskListRangeIDQuery,
 		tasklistCondition.RangeID,
+		timeStamp,
 		domainID,
 		taskListName,
 		taskListType,
@@ -318,7 +363,7 @@ func (db *cdb) GetTasksCount(ctx context.Context, filter *nosqlplugin.TasksFilte
 
 // SelectTasks return tasks that associated to a tasklist
 func (db *cdb) SelectTasks(ctx context.Context, filter *nosqlplugin.TasksFilter) ([]*nosqlplugin.TaskRow, error) {
-	// Reading tasklist tasks need to be quorum level consistent, otherwise we could loose task
+	// Reading tasklist tasks need to be quorum level consistent, otherwise we could lose tasks
 	query := db.session.Query(templateGetTasksQuery,
 		filter.DomainID,
 		filter.TaskListName,
@@ -341,8 +386,25 @@ PopulateTasks:
 		if !ok { // no tasks, but static column record returned
 			continue
 		}
+
+		// Extract the TTL value
+		ttlValue, ttlExists := task["ttl"]
+
+		// Check if TTL is null or an integer
+		var ttl *int
+		if ttlExists && ttlValue != nil {
+			if ttlInt, ok := ttlValue.(int); ok {
+				ttl = &ttlInt // TTL is an integer
+			}
+		}
+
 		t := createTaskInfo(task["task"].(map[string]interface{}))
 		t.TaskID = taskID.(int64)
+
+		if ttl != nil {
+			t.Expiry = db.timeSrc.Now().Add(time.Duration(*ttl) * time.Second)
+		}
+
 		response = append(response, t)
 		if len(response) == filter.BatchSize {
 			break PopulateTasks

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -93,6 +94,7 @@ type (
 		requestChan   chan<- *request
 		syncShardChan chan *types.SyncShardStatus
 		done          chan struct{}
+		wg            sync.WaitGroup
 	}
 
 	request struct {
@@ -158,6 +160,7 @@ func (p *taskProcessorImpl) Start() {
 		return
 	}
 
+	p.wg.Add(3)
 	go p.processorLoop()
 	go p.syncShardStatusLoop()
 	go p.cleanupReplicationTaskLoop()
@@ -172,24 +175,43 @@ func (p *taskProcessorImpl) Stop() {
 
 	p.logger.Debug("ReplicationTaskProcessor shutting down.")
 	close(p.done)
+
+	if !common.AwaitWaitGroup(&p.wg, 10*time.Second) {
+		p.logger.Warn("ReplicationTaskProcessor timed out on shutdown.")
+	} else {
+		p.logger.Info("ReplicationTaskProcessor shutdown completed")
+	}
 }
 
 func (p *taskProcessorImpl) processorLoop() {
 	defer func() {
 		p.logger.Debug("Closing replication task processor.", tag.ReadLevel(p.lastRetrievedMessageID))
+		p.wg.Done()
 	}()
 
 Loop:
 	for {
-		// for each iteration, do close check first
-		select {
-		case <-p.done:
-			p.logger.Debug("ReplicationTaskProcessor shutting down.")
+		respChan := make(chan *types.ReplicationMessages, 1)
+		// TODO: when we support prefetching, LastRetrievedMessageID can be different than LastProcessedMessageID
+
+		if p.isShuttingDown() {
 			return
-		default:
 		}
 
-		respChan := p.sendFetchMessageRequest()
+		select {
+		case <-p.done:
+			// shard is closing
+			return
+		case p.requestChan <- &request{
+			token: &types.ReplicationToken{
+				ShardID:                int32(p.shard.GetShardID()),
+				LastRetrievedMessageID: p.lastRetrievedMessageID,
+				LastProcessedMessageID: p.lastProcessedMessageID,
+			},
+			respChan: respChan,
+		}:
+			// signal sent, continue to process replication messages
+		}
 
 		select {
 		case response, ok := <-respChan:
@@ -213,16 +235,18 @@ Loop:
 }
 
 func (p *taskProcessorImpl) cleanupReplicationTaskLoop() {
+	defer p.wg.Done()
 
 	shardID := p.shard.GetShardID()
 	timer := time.NewTimer(backoff.JitDuration(
 		p.config.ReplicationTaskProcessorCleanupInterval(shardID),
 		p.config.ReplicationTaskProcessorCleanupJitterCoefficient(shardID),
 	))
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-p.done:
-			timer.Stop()
 			return
 		case <-timer.C:
 			if err := p.cleanupAckedReplicationTasks(); err != nil {
@@ -272,22 +296,7 @@ func (p *taskProcessorImpl) cleanupAckedReplicationTasks() error {
 	return nil
 }
 
-func (p *taskProcessorImpl) sendFetchMessageRequest() <-chan *types.ReplicationMessages {
-	respChan := make(chan *types.ReplicationMessages, 1)
-	// TODO: when we support prefetching, LastRetrievedMessageID can be different than LastProcessedMessageID
-	p.requestChan <- &request{
-		token: &types.ReplicationToken{
-			ShardID:                int32(p.shard.GetShardID()),
-			LastRetrievedMessageID: p.lastRetrievedMessageID,
-			LastProcessedMessageID: p.lastProcessedMessageID,
-		},
-		respChan: respChan,
-	}
-	return respChan
-}
-
 func (p *taskProcessorImpl) processResponse(response *types.ReplicationMessages) {
-
 	select {
 	case p.syncShardChan <- response.GetSyncShardStatus():
 	default:
@@ -317,6 +326,12 @@ func (p *taskProcessorImpl) processResponse(response *types.ReplicationMessages)
 		scope.RecordTimer(metrics.ReplicationTasksAppliedLatency, time.Since(batchRequestStartTime))
 	}
 
+	if p.isShuttingDown() {
+		// avoid updating ack-levels if there's a shutdown as well remembering that GetReplication messages is a *write* api
+		// (keeping track of consumer offsets), so we have to be careful what data it's sent
+		return
+	}
+
 	p.lastProcessedMessageID = response.GetLastRetrievedMessageID()
 	p.lastRetrievedMessageID = response.GetLastRetrievedMessageID()
 	scope.UpdateGauge(metrics.LastRetrievedMessageID, float64(p.lastRetrievedMessageID))
@@ -324,11 +339,14 @@ func (p *taskProcessorImpl) processResponse(response *types.ReplicationMessages)
 }
 
 func (p *taskProcessorImpl) syncShardStatusLoop() {
+	defer p.wg.Done()
 
 	timer := time.NewTimer(backoff.JitDuration(
 		p.config.ShardSyncMinInterval(),
 		p.config.ShardSyncTimerJitterCoefficient(),
 	))
+	defer timer.Stop()
+
 	var syncShardTask *types.SyncShardStatus
 	for {
 		select {
@@ -346,19 +364,14 @@ func (p *taskProcessorImpl) syncShardStatusLoop() {
 				p.config.ShardSyncTimerJitterCoefficient(),
 			))
 		case <-p.done:
-			timer.Stop()
 			return
 		}
 	}
 }
 
-func (p *taskProcessorImpl) handleSyncShardStatus(
-	status *types.SyncShardStatus,
-) error {
-
+func (p *taskProcessorImpl) handleSyncShardStatus(status *types.SyncShardStatus) error {
 	if status == nil ||
-		p.shard.GetTimeSource().Now().Sub(
-			time.Unix(0, status.GetTimestamp())) > dropSyncShardTaskTimeThreshold {
+		p.shard.GetTimeSource().Now().Sub(time.Unix(0, status.GetTimestamp())) > dropSyncShardTaskTimeThreshold {
 		return nil
 	}
 	p.metricsClient.Scope(metrics.HistorySyncShardStatusScope).IncCounter(metrics.SyncShardFromRemoteCounter)
@@ -389,7 +402,7 @@ func (p *taskProcessorImpl) processSingleTask(replicationTask *types.Replication
 		})
 	}
 
-	//Handle service busy error
+	// Handle service busy error
 	throttleRetry := backoff.NewThrottleRetry(
 		backoff.WithRetryPolicy(common.CreateReplicationServiceBusyRetryPolicy()),
 		backoff.WithRetryableError(common.IsServiceBusyError),
@@ -406,7 +419,7 @@ func (p *taskProcessorImpl) processSingleTask(replicationTask *types.Replication
 		p.logger.Warn("Encounter workflow withour version histories")
 		return nil
 	default:
-		//handle error
+		// handle error
 	}
 
 	// handle error to DLQ
@@ -429,11 +442,11 @@ func (p *taskProcessorImpl) processSingleTask(replicationTask *types.Replication
 			tag.TaskType(request.TaskInfo.GetTaskType()),
 			tag.Error(err),
 		)
-		//TODO: uncomment this when the execution fixer workflow is ready
-		//if err = p.triggerDataInconsistencyScan(replicationTask); err != nil {
+		// TODO: uncomment this when the execution fixer workflow is ready
+		// if err = p.triggerDataInconsistencyScan(replicationTask); err != nil {
 		//	p.logger.Warn("Failed to trigger data scan", tag.Error(err))
 		//	p.metricsClient.IncCounter(metrics.ReplicationDLQStatsScope, metrics.ReplicationDLQValidationFailed)
-		//}
+		// }
 		return p.putReplicationTaskToDLQ(request)
 	}
 }
@@ -441,9 +454,7 @@ func (p *taskProcessorImpl) processSingleTask(replicationTask *types.Replication
 func (p *taskProcessorImpl) processTaskOnce(replicationTask *types.ReplicationTask) error {
 	ts := p.shard.GetTimeSource()
 	startTime := ts.Now()
-	scope, err := p.taskExecutor.execute(
-		replicationTask,
-		false)
+	scope, err := p.taskExecutor.execute(replicationTask, false)
 
 	if err != nil {
 		p.updateFailureMetric(scope, err)
@@ -556,7 +567,6 @@ func (p *taskProcessorImpl) generateDLQRequest(
 }
 
 func (p *taskProcessorImpl) triggerDataInconsistencyScan(replicationTask *types.ReplicationTask) error {
-
 	var failoverVersion int64
 	var domainID string
 	var workflowID string
@@ -672,4 +682,13 @@ func (p *taskProcessorImpl) taskProcessingStartWait() {
 		p.config.ReplicationTaskProcessorStartWait(shardID),
 		p.config.ReplicationTaskProcessorStartWaitJitterCoefficient(shardID),
 	))
+}
+
+func (p *taskProcessorImpl) isShuttingDown() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
 }

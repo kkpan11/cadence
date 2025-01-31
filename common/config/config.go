@@ -43,6 +43,8 @@ type (
 	Config struct {
 		// Ringpop is the ringpop related configuration
 		Ringpop ringpopprovider.Config `yaml:"ringpop"`
+		// Membership is used to configure peer provider plugin
+		Membership Membership `yaml:"membership"`
 		// Persistence contains the configuration for cadence datastores
 		Persistence Persistence `yaml:"persistence"`
 		// Log is the logging config
@@ -82,7 +84,19 @@ type (
 		// To use Async APIs for a domain first specify the queue using Admin API.
 		// Either refer to one of the predefined queues in this config or alternatively specify the queue details inline in the API call.
 		AsyncWorkflowQueues map[string]AsyncWorkflowQueueProvider `yaml:"asyncWorkflowQueues"`
+		// ShardDistributorClient is the config for shard distributor client
+		// Shard distributor is used to distribute shards across multiple cadence service instances
+		// Note: This is not recommended for use, it's still experimental
+		ShardDistributorClient ShardDistributorClient `yaml:"shardDistributorClient"`
 	}
+
+	// Membership holds peer provider configuration.
+	Membership struct {
+		Provider PeerProvider `yaml:"provider"`
+	}
+
+	// PeerProvider is provider config. Contents depends on plugin in use
+	PeerProvider map[string]*YamlNode
 
 	HeaderRule struct {
 		Add   bool // if false, matching headers are removed if previously matched.
@@ -172,6 +186,7 @@ type (
 		AdvancedVisibilityStore string `yaml:"advancedVisibilityStore"`
 		// HistoryMaxConns is the desired number of conns to history store. Value specified
 		// here overrides the MaxConns config specified as part of datastore
+		// Deprecated: This value is not used
 		HistoryMaxConns int `yaml:"historyMaxConns"`
 		// EnablePersistenceLatencyHistogramMetrics is to enable latency histogram metrics for persistence layer
 		EnablePersistenceLatencyHistogramMetrics bool `yaml:"enablePersistenceLatencyHistogramMetrics"`
@@ -236,11 +251,22 @@ type (
 		TLS *TLS `yaml:"tls"`
 		// ProtoVersion
 		ProtoVersion int `yaml:"protoVersion"`
+		// ConnectTimeout defines duration for initial dial
+		ConnectTimeout time.Duration `yaml:"connectTimeout"`
+		// Timout is a connection timeout
+		Timeout time.Duration `yaml:"timeout"`
+		// Consistency defines default consistency level
+		Consistency string `yaml:"consistency"`
+		// SerialConsistency sets the consistency for the serial part of queries
+		SerialConsistency string `yaml:"serialConsistency"`
 		// ConnectAttributes is a set of key-value attributes as a supplement/extension to the above common fields
 		// Use it ONLY when a configure is too specific to a particular NoSQL database that should not be in the common struct
 		// Otherwise please add new fields to the struct for better documentation
 		// If being used in any database, update this comment here to make it clear
 		ConnectAttributes map[string]string `yaml:"connectAttributes"`
+		// HostSelectionPolicy sets gocql policy for selecting host for a query
+		// Available selections are: "tokenaware,roundrobin", "hostpool-epsilon-greedy", "roundrobin"
+		HostSelectionPolicy string `yaml:"hostSelectionPolicy"`
 	}
 
 	// ShardedNoSQL contains configuration to connect to a set of NoSQL Database clusters in a sharded manner
@@ -568,6 +594,12 @@ type (
 		Status string `yaml:"status"`
 		// URI is the domain default URI for visibility archiver
 		URI string `yaml:"URI"`
+	}
+
+	// ShardDistributorClient contains the config items for shard distributor
+	ShardDistributorClient struct {
+		// The host and port of the shard distributor server
+		HostPort string `yaml:"hostPort"`
 	}
 
 	// YamlNode is a lazy-unmarshaler, because *yaml.Node only exists in gopkg.in/yaml.v3, not v2,

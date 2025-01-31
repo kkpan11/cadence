@@ -36,18 +36,14 @@ BIN := $(BUILD)/bin
 # usually unnecessary to clean, and may require downloads to restore, so this folder is not automatically cleaned.
 STABLE_BIN := .bin
 
-
-# current (when committed) version of Go used in CI, and ideally also our docker images.
-# this generally does not matter, but can impact goimports output.
-# for maximum stability, make sure you use the same version as CI uses.
-#
-# this can _likely_ remain a major version, as fmt output does not tend to change in minor versions,
-# which will allow findstring to match any minor version.
-EXPECTED_GO_VERSION := go1.20
-CURRENT_GO_VERSION := $(shell go version)
-ifeq (,$(findstring $(EXPECTED_GO_VERSION),$(CURRENT_GO_VERSION)))
-# if you are seeing this warning: consider using https://github.com/travis-ci/gimme to pin your version
-$(warning Caution: you are not using CI's go version. Expected: $(EXPECTED_GO_VERSION), current: $(CURRENT_GO_VERSION))
+# toolchain version we all use.
+# this export ensures it is a precise version rather than a minimum.
+# lint step ensures this matches other files.
+GOWORK_TOOLCHAIN := $(word 2,$(shell grep 'toolchain' go.work))
+export GOTOOLCHAIN ?= $(GOWORK_TOOLCHAIN)
+ifneq ($(GOTOOLCHAIN),$(GOWORK_TOOLCHAIN))
+# this can be useful for trying new/old versions, so don't block it
+$(warning warning: your Go toolchain is explicitly set to GOTOOLCHAIN=$(GOTOOLCHAIN), ignoring go.work version $(GOWORK_TOOLCHAIN)...)
 endif
 
 # ====================================
@@ -64,6 +60,7 @@ endif
 $(BUILD)/lint: $(BUILD)/fmt # lint will fail if fmt fails, so fmt first
 $(BUILD)/proto-lint:
 $(BUILD)/gomod-lint:
+$(BUILD)/goversion-lint:
 $(BUILD)/fmt: $(BUILD)/copyright # formatting must occur only after all other go-file-modifications are done
 $(BUILD)/copyright: $(BUILD)/codegen # must add copyright to generated code, sometimes needs re-formatting
 $(BUILD)/codegen: $(BUILD)/thrift $(BUILD)/protoc
@@ -129,9 +126,12 @@ FRESH_ALL_SRC = $(shell \
 		-o -path './idls/*' \
 		-o -path './.build/*' \
 		-o -path './.bin/*' \
+		-o -path './.git/*' \
 	\) \
 	-prune \
-	-o -name '*.go' -print \
+	-o -name '*.go' \
+	-type f \
+	-print \
 )
 # most things can use a cached copy, e.g. all dependencies.
 # this will not include any files that are created during a `make` run, e.g. via protoc,
@@ -175,45 +175,42 @@ endef
 $(BIN) $(BUILD) $(STABLE_BIN):
 	$Q mkdir -p $@
 
-$(BIN)/thriftrw: go.mod
+$(BIN)/thriftrw: go.mod go.work
 	$(call go_mod_build_tool,go.uber.org/thriftrw)
 
-$(BIN)/thriftrw-plugin-yarpc: go.mod
+$(BIN)/thriftrw-plugin-yarpc: go.mod go.work
 	$(call go_mod_build_tool,go.uber.org/yarpc/encoding/thrift/thriftrw-plugin-yarpc)
 
-$(BIN)/mockgen: internal/tools/go.mod
-	$(call go_build_tool,github.com/golang/mock/mockgen)
+$(BIN)/mockgen: internal/tools/go.mod go.work
+	$(call go_build_tool,go.uber.org/mock/mockgen)
 
-$(BIN)/mockery: internal/tools/go.mod
+$(BIN)/mockery: internal/tools/go.mod go.work
 	$(call go_build_tool,github.com/vektra/mockery/v2,mockery)
 
-$(BIN)/enumer: internal/tools/go.mod
+$(BIN)/enumer: internal/tools/go.mod go.work
 	$(call go_build_tool,github.com/dmarkham/enumer)
 
 # organizes imports and reformats
-$(BIN)/gci: internal/tools/go.mod
+$(BIN)/gci: internal/tools/go.mod go.work
 	$(call go_build_tool,github.com/daixiang0/gci)
 
 # removes unused imports and reformats
-$(BIN)/goimports: internal/tools/go.mod
+$(BIN)/goimports: internal/tools/go.mod go.work
 	$(call go_build_tool,golang.org/x/tools/cmd/goimports)
 
-$(BIN)/gowrap: go.mod
+$(BIN)/gowrap: go.mod go.work
 	$(call go_build_tool,github.com/hexdigest/gowrap/cmd/gowrap)
 
-$(BIN)/revive: internal/tools/go.mod
+$(BIN)/revive: internal/tools/go.mod go.work
 	$(call go_build_tool,github.com/mgechev/revive)
 
-$(BIN)/protoc-gen-gogofast: go.mod | $(BIN)
+$(BIN)/protoc-gen-gogofast: go.mod go.work | $(BIN)
 	$(call go_mod_build_tool,github.com/gogo/protobuf/protoc-gen-gogofast)
 
-$(BIN)/protoc-gen-yarpc-go: go.mod | $(BIN)
+$(BIN)/protoc-gen-yarpc-go: go.mod go.work | $(BIN)
 	$(call go_mod_build_tool,go.uber.org/yarpc/encoding/protobuf/protoc-gen-yarpc-go)
 
-$(BIN)/goveralls: internal/tools/go.mod
-	$(call go_build_tool,github.com/mattn/goveralls)
-
-$(BUILD)/go_mod_check: go.mod internal/tools/go.mod
+$(BUILD)/go_mod_check: go.mod internal/tools/go.mod go.work
 	$Q # generated == used is occasionally important for gomock / mock libs in general.  this is not a definite problem if violated though.
 	$Q ./scripts/check-gomod-version.sh github.com/golang/mock/gomock $(if $(verbose),-v)
 	$Q touch $@
@@ -254,6 +251,31 @@ $(STABLE_BIN)/$(PROTOC_VERSION_BIN): | $(STABLE_BIN)
 	$Q curl -sSL $(PROTOC_URL) -o $(STABLE_BIN)/protoc.zip
 	$Q unzip -q $(STABLE_BIN)/protoc.zip -d $(PROTOC_UNZIP_DIR)
 	$Q cp $(PROTOC_UNZIP_DIR)/bin/protoc $@
+
+# checks that the idl submodule points to a commit on master, and that it matches the go module (which must be a pseudo version).
+# this is only used in an explicit CI step, because it's expected to fail when developing.
+#
+# `git ls-tree HEAD idls` is selected because this only cares about the committed/checked-out target,
+# not whatever the current status is, because only the committed value will exist for others.
+#
+# and last but not least: this avoids using `go` to make this check take only a couple seconds in CI,
+# so the whole docker container doesn't have to be prepared.
+.idl-status:
+	$(Q) cd idls && \
+		SUBMODULE_COMMIT=$$(git rev-parse HEAD) && \
+		BRANCH_INFO=$$(git branch -r --contains "$$SUBMODULE_COMMIT" | head -n1) && \
+		if ! git branch -r --contains "$$SUBMODULE_COMMIT" | grep -q "origin/master"; then \
+			echo "Error: Submodule commit $$SUBMODULE_COMMIT belongs to $$BRANCH_INFO, not to master branch" && \
+			exit 1; \
+		fi
+	$(Q) idlsha=$$(git ls-tree HEAD idls | awk '{print substr($$3,0,12)}') && \
+		gosha=$$(grep github.com/uber/cadence-idl go.mod | tr '-' '\n' | tail -n1) && \
+		if [[ "$$idlsha" != "$$gosha" ]]; then \
+			echo "IDL submodule sha ($$idlsha) does not match go module sha ($$gosha)." >&2 && \
+			echo "Make sure the IDL PR has been merged, and this PR is updated, before merging here." >&2 && \
+			exit 1; \
+		fi
+
 
 # ====================================
 # Codegen targets
@@ -360,7 +382,22 @@ $(BUILD)/gomod-lint: go.mod internal/tools/go.mod common/archiver/gcloud/go.mod 
 # it's a coarse "you probably don't need to re-lint" filter, nothing more.
 $(BUILD)/code-lint: $(LINT_SRC) $(BIN)/revive | $(BUILD)
 	$Q echo "lint..."
+	$Q # non-optional vet checks.  unfortunately these are not currently included in `go test`'s default behavior.
+	$Q go vet -copylocks ./... ./common/archiver/gcloud/...
 	$Q $(BIN)/revive -config revive.toml -exclude './vendor/...' -exclude './.gen/...' -formatter stylish ./...
+	$Q # look for go files with "//comments", and ignore "//go:build"-style directives ("grep -n" shows "file:line: //go:build" so the regex is a bit complex)
+	$Q bad="$$(find . -type f -name '*.go' -not -path './idls/*' | xargs grep -n -E '^\s*//\S' | grep -E -v '^[^:]+:[^:]+:\s*//[a-z]+:[a-z]+' || true)"; \
+		if [ -n "$$bad" ]; then \
+		  echo "$$bad" >&2; \
+		  echo 'non-directive comments must have a space after the "//"' >&2; \
+		  exit 1; \
+		fi
+	$Q touch $@
+
+$(BUILD)/goversion-lint: go.work Dockerfile docker/buildkite/Dockerfile
+	$Q echo "checking go version..."
+	$Q # intentionally using go.work toolchain, as GOTOOLCHAIN is user-overridable
+	$Q ./scripts/check-go-toolchain.sh $(GOWORK_TOOLCHAIN)
 	$Q touch $@
 
 # fmt and copyright are mutually cyclic with their inputs, so if a copyright header is modified:
@@ -410,14 +447,14 @@ endef
 
 # useful to actually re-run to get output again.
 # reuse the intermediates for simplicity and consistency.
-lint: ## (re)run the linter
-	$(call remake,proto-lint gomod-lint code-lint)
+lint: ## (Re)run the linter
+	$(call remake,proto-lint gomod-lint code-lint goversion-lint)
 
 # intentionally not re-making, it's a bit slow and it's clear when it's unnecessary
-fmt: $(BUILD)/fmt ## run gofmt / organize imports / etc
+fmt: $(BUILD)/fmt ## Run `gofmt` / organize imports / etc
 
 # not identical to the intermediate target, but does provide the same codegen (or more).
-copyright: $(BIN)/copyright | $(BUILD) ## update copyright headers
+copyright: $(BIN)/copyright | $(BUILD) ## Update copyright headers
 	$(BIN)/copyright
 	$Q touch $(BUILD)/copyright
 
@@ -427,8 +464,7 @@ $Q output=$$(mktemp); $(MAKE) $1 > $$output 2>&1 || ( cat $$output; echo -e '\nf
 endef
 
 # pre-PR target to build and refresh everything
-# this is ##-documented directly in the help target, to keep it more visible.
-pr:
+pr: ## Redo all codegen and basic checks, to ensure your PR will be able to run tests.  Recommended before opening a github PR
 	$Q $(if $(verbose),$(MAKE) tidy,$(call make_quietly,tidy))
 	$Q $(if $(verbose),$(MAKE) go-generate,$(call make_quietly,go-generate))
 	$Q $(if $(verbose),$(MAKE) copyright,$(call make_quietly,copyright))
@@ -488,11 +524,11 @@ cadence-bench: $(BINS_DEPEND_ON)
 
 .PHONY: go-generate bins tools release clean
 
-bins: $(BINS) ## Make all binaries
+bins: $(BINS) ## Build all binaries, and any fast codegen needed (does not refresh wrappers or mocks)
 
 tools: $(TOOLS)
 
-go-generate: $(BIN)/mockgen $(BIN)/enumer $(BIN)/mockery  $(BIN)/gowrap ## run go generate to regen mocks, enums, etc
+go-generate: $(BIN)/mockgen $(BIN)/enumer $(BIN)/mockery  $(BIN)/gowrap ## Run `go generate` to regen mocks, enums, etc
 	$Q echo "running go generate ./..., this takes a minute or more..."
 	$Q # add our bins to PATH so `go generate` can find them
 	$Q $(BIN_PATH) go generate $(if $(verbose),-v) ./...
@@ -504,7 +540,7 @@ release: ## Re-generate generated code and run tests
 	$(MAKE) --no-print-directory go-generate
 	$(MAKE) --no-print-directory test
 
-build: ## Build all packages and all tests (ensures everything compiles)
+build: ## `go build` all packages and tests (a quick compile check only, skips all other steps)
 	$Q echo 'Building all packages and submodules...'
 	$Q go build ./...
 	$Q cd common/archiver/gcloud; go build ./...
@@ -516,7 +552,7 @@ build: ## Build all packages and all tests (ensures everything compiles)
 	$Q cd common/archiver/gcloud; go test -exec /usr/bin/true ./... >/dev/null
 	$Q cd cmd/server; go test -exec /usr/bin/true ./... >/dev/null
 
-tidy: ## go mod tidy all packages
+tidy: ## `go mod tidy` all packages
 	$Q # tidy in dependency order
 	$Q go mod tidy
 	$Q cd common/archiver/gcloud; go mod tidy || (echo "failed to tidy gcloud plugin, try manually copying go.mod contents into common/archiver/gcloud/go.mod and rerunning" >&2; exit 1)
@@ -531,7 +567,7 @@ clean: ## Clean build products
 
 # v----- not yet cleaned up -----v
 
-.PHONY: git-submodules test bins build clean cover cover_ci help
+.PHONY: git-submodules test bins build clean cover help
 
 TOOLS_CMD_ROOT=./cmd/tools
 INTEG_TEST_ROOT=./host
@@ -540,7 +576,10 @@ INTEG_TEST_XDC_ROOT=./host/xdc
 INTEG_TEST_XDC_DIR=hostxdc
 INTEG_TEST_NDC_ROOT=./host/ndc
 INTEG_TEST_NDC_DIR=hostndc
-OPT_OUT_TEST=
+
+# Opt out folders that shouldn't be run as part of unit tests such as integration tests, simulations.
+# Syntax: "folder1% folder2%" # space separated list of folders to opt out
+OPT_OUT_TEST_FOLDERS=./simulation%
 
 TEST_TIMEOUT ?= 20m
 TEST_ARG ?= -race $(if $(verbose),-v) -timeout $(TEST_TIMEOUT)
@@ -558,7 +597,7 @@ endif
 TEST_DIRS := $(filter-out $(INTEG_TEST_XDC_ROOT)%, $(sort $(dir $(filter %_test.go,$(ALL_SRC)))))
 # all tests other than end-to-end integration test fall into the pkg_test category.
 # ?= allows passing specific (space-separated) dirs for faster testing
-PKG_TEST_DIRS ?= $(filter-out $(INTEG_TEST_ROOT)% $(OPT_OUT_TEST), $(TEST_DIRS))
+PKG_TEST_DIRS ?= $(filter-out $(INTEG_TEST_ROOT)% $(OPT_OUT_TEST_FOLDERS), $(TEST_DIRS))
 
 # Code coverage output files
 COVER_ROOT                      := $(BUILD)/coverage
@@ -593,12 +632,15 @@ $Q FAIL=""; for dir in $1; do \
 done; test -z "$$FAIL" || (echo "Failed packages; $$FAIL"; exit 1)
 endef
 
-test: ## Build and run all tests. This target is for local development. The pipeline is using cover_profile target
+test: ## Build and run all tests locally
 	$Q rm -f test
 	$Q rm -f test.log
 	$Q echo Running special test cases without race detector:
 	$Q go test -v ./cmd/server/cadence/
 	$Q $(call looptest,$(PKG_TEST_DIRS))
+
+test_dirs:
+	echo $(PKG_TEST_DIRS)
 
 test_e2e:
 	$Q rm -f test
@@ -658,9 +700,6 @@ $(COVER_ROOT)/cover.out: $(UNIT_COVER_FILE) $(INTEG_COVER_FILE_CASS) $(INTEG_COV
 cover: $(COVER_ROOT)/cover.out
 	go tool cover -html=$(COVER_ROOT)/cover.out;
 
-cover_ci: $(COVER_ROOT)/cover.out $(BIN)/goveralls
-	$(BIN)/goveralls -coverprofile=$(COVER_ROOT)/cover.out -service=buildkite || echo Coveralls failed;
-
 install-schema: cadence-cassandra-tool
 	$Q echo installing schema
 	./cadence-cassandra-tool create -k cadence --rf 1
@@ -710,8 +749,8 @@ install-schema-es-v6:
 	curl -X PUT "http://127.0.0.1:9200/cadence-visibility-dev"
 
 install-schema-es-opensearch:
-	curl -X PUT "https://127.0.0.1:9200/_template/cadence-visibility-template" -H 'Content-Type: application/json' -d @./schema/elasticsearch/os2/visibility/index_template.json -u admin:admin --insecure
-	curl -X PUT "https://127.0.0.1:9200/cadence-visibility-dev" -u admin:admin --insecure
+	curl -X PUT "https://127.0.0.1:9200/_template/cadence-visibility-template" -H 'Content-Type: application/json' -d @./schema/elasticsearch/os2/visibility/index_template.json -u admin:DevTestInitial123! --insecure
+	curl -X PUT "https://127.0.0.1:9200/cadence-visibility-dev" -u admin:DevTestInitial123! --insecure
 
 start: bins
 	./cadence-server start
@@ -791,10 +830,8 @@ deps-all: ## Check for all dependency updates
 		| $(JQ_DEPS_AGE) \
 		| sort -n
 
-help:
-	$Q # print help and PR first, so they're highly visible
-	$Q printf "\033[36m%-20s\033[0m %s\n" 'help' 'Prints a help message showing any specially-commented targets'
-	$Q printf "\033[36m%-20s\033[0m %s\n" 'pr' 'Refresh all code, to ensure your PR can reach tests.  Recommended before opening a github PR.'
+help: ## Prints a help message showing any specially-commented targets
+	$Q # print the high-value ones first, so they're more visible.  the "....." prefixes match the shell coloring chars
+	$Q cat $(MAKEFILE_LIST) | grep -e "^[a-zA-Z_\-]*:.* ## .*" | awk 'BEGIN {FS = ":.*? ## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}' | sort | grep -E '^.....(help|pr|bins)\b'
 	$Q echo '-----------------------------------'
-	$Q # then everything matching "target: ## magic comments"
-	$Q cat $(MAKEFILE_LIST) | grep -e "^[a-zA-Z_\-]*:.* ## .*" | awk 'BEGIN {FS = ":.*? ## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}' | sort
+	$Q cat $(MAKEFILE_LIST) | grep -e "^[a-zA-Z_\-]*:.* ## .*" | awk 'BEGIN {FS = ":.*? ## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}' | sort | grep -vE '^.....(help|pr|bins)\b'

@@ -25,8 +25,8 @@ package membership
 import (
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/log"
@@ -65,6 +65,7 @@ func TestMethodsAreRoutedToARing(t *testing.T) {
 	}
 
 	pp.EXPECT().GetMembers("test-worker").Return(hosts, nil).Times(1)
+	pp.EXPECT().WhoAmI().AnyTimes()
 
 	r, err := a.getRing("test-worker")
 	r.refresh()

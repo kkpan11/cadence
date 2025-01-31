@@ -33,6 +33,8 @@ import (
 
 	"github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/common/dynamicconfig"
+	"github.com/uber/cadence/common/log"
+	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/service"
 )
 
@@ -61,7 +63,7 @@ type httpParams struct {
 }
 
 // NewParams creates parameters for rpc.Factory from the given config
-func NewParams(serviceName string, config *config.Config, dc *dynamicconfig.Collection) (Params, error) {
+func NewParams(serviceName string, config *config.Config, dc *dynamicconfig.Collection, logger log.Logger, metricsCl metrics.Client) (Params, error) {
 	serviceConfig, err := config.GetServiceConfig(serviceName)
 	if err != nil {
 		return Params{}, err
@@ -131,19 +133,40 @@ func NewParams(serviceName string, config *config.Config, dc *dynamicconfig.Coll
 		}
 	}
 
-	return Params{
-		ServiceName:     serviceName,
-		HTTP:            http,
-		TChannelAddress: net.JoinHostPort(listenIP.String(), strconv.Itoa(int(serviceConfig.RPC.Port))),
-		GRPCAddress:     net.JoinHostPort(listenIP.String(), strconv.Itoa(int(serviceConfig.RPC.GRPCPort))),
-		GRPCMaxMsgSize:  serviceConfig.RPC.GRPCMaxMsgSize,
-		OutboundsBuilder: CombineOutbounds(
-			NewDirectOutbound(service.History, enableGRPCOutbound, outboundTLS[service.History]),
-			NewDirectOutbound(service.Matching, enableGRPCOutbound, outboundTLS[service.Matching]),
-			publicClientOutbound,
+	outboundsBuilders := []OutboundsBuilder{
+		NewDirectOutboundBuilder(
+			service.History,
+			enableGRPCOutbound,
+			outboundTLS[service.History],
+			NewDirectPeerChooserFactory(service.History, logger, metricsCl),
+			dc.GetBoolProperty(dynamicconfig.EnableConnectionRetainingDirectChooser),
 		),
-		InboundTLS:  inboundTLS,
-		OutboundTLS: outboundTLS,
+		NewDirectOutboundBuilder(
+			service.Matching,
+			enableGRPCOutbound,
+			outboundTLS[service.Matching],
+			NewDirectPeerChooserFactory(service.Matching, logger, metricsCl),
+			dc.GetBoolProperty(dynamicconfig.EnableConnectionRetainingDirectChooser),
+		),
+		publicClientOutbound,
+	}
+	if config.ShardDistributorClient.HostPort != "" {
+		outboundsBuilders = append(outboundsBuilders, NewSingleGRPCOutboundBuilder(
+			service.ShardDistributor,
+			service.ShardDistributor,
+			config.ShardDistributorClient.HostPort,
+		))
+	}
+
+	return Params{
+		ServiceName:      serviceName,
+		HTTP:             http,
+		TChannelAddress:  net.JoinHostPort(listenIP.String(), strconv.Itoa(int(serviceConfig.RPC.Port))),
+		GRPCAddress:      net.JoinHostPort(listenIP.String(), strconv.Itoa(int(serviceConfig.RPC.GRPCPort))),
+		GRPCMaxMsgSize:   serviceConfig.RPC.GRPCMaxMsgSize,
+		OutboundsBuilder: CombineOutbounds(outboundsBuilders...),
+		InboundTLS:       inboundTLS,
+		OutboundTLS:      outboundTLS,
 		InboundMiddleware: yarpc.InboundMiddleware{
 			// order matters: ForwardPartitionConfigMiddleware must be applied after ClientPartitionConfigMiddleware
 			Unary: yarpc.UnaryInboundMiddleware(&PinotComparatorMiddleware{}, &InboundMetricsMiddleware{}, &ClientPartitionConfigMiddleware{}, &ForwardPartitionConfigMiddleware{}),

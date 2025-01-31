@@ -89,6 +89,7 @@ type (
 		MessagingClientConfig *MessagingClientConfig
 		Persistence           persistencetests.TestBaseOptions
 		HistoryConfig         *HistoryConfig
+		MatchingConfig        *MatchingConfig
 		ESConfig              *config.ElasticSearchConfig
 		WorkerConfig          *WorkerConfig
 		MockAdminClient       map[string]adminClient.Client
@@ -168,6 +169,7 @@ func NewCluster(t *testing.T, options *TestClusterConfig, logger log.Logger, par
 		ArchiverMetadata:              archiverBase.metadata,
 		ArchiverProvider:              archiverBase.provider,
 		HistoryConfig:                 options.HistoryConfig,
+		MatchingConfig:                options.MatchingConfig,
 		WorkerConfig:                  options.WorkerConfig,
 		MockAdminClient:               options.MockAdminClient,
 		DomainReplicationTaskExecutor: domain.NewReplicationTaskExecutor(testBase.DomainManager, clock.NewRealTimeSource(), logger),
@@ -199,18 +201,20 @@ func NewPinotTestCluster(t *testing.T, options *TestClusterConfig, logger log.Lo
 	var pinotClient pnt.GenericClient
 	if options.WorkerConfig.EnableIndexer {
 		var err error
-		esClient, err = elasticsearch.NewGenericClient(options.ESConfig, logger)
-		if err != nil {
-			return nil, err
+		if options.PinotConfig.Migration.Enabled {
+			esClient, err = elasticsearch.NewGenericClient(options.ESConfig, logger)
+			if err != nil {
+				return nil, err
+			}
 		}
-		pConfig.AdvancedVisibilityStore = "pinot-visibility"
-		pinotBroker := options.PinotConfig.Broker
-		pinotRawClient, err := pinot.NewFromBrokerList([]string{pinotBroker})
-		if err != nil || pinotRawClient == nil {
-			return nil, err
-		}
-		pinotClient = pnt.NewPinotClient(pinotRawClient, logger, options.PinotConfig)
 	}
+	pConfig.AdvancedVisibilityStore = "pinot-visibility"
+	pinotBroker := options.PinotConfig.Broker
+	pinotRawClient, err := pinot.NewFromBrokerList([]string{pinotBroker})
+	if err != nil || pinotRawClient == nil {
+		return nil, err
+	}
+	pinotClient = pnt.NewPinotClient(pinotRawClient, logger, options.PinotConfig)
 
 	scope := tally.NewTestScope("integration-test", nil)
 	metricsClient := metrics.NewClient(scope, metrics.ServiceIdx(0))
@@ -236,6 +240,7 @@ func NewPinotTestCluster(t *testing.T, options *TestClusterConfig, logger log.Lo
 		ArchiverMetadata:              archiverBase.metadata,
 		ArchiverProvider:              archiverBase.provider,
 		HistoryConfig:                 options.HistoryConfig,
+		MatchingConfig:                options.MatchingConfig,
 		WorkerConfig:                  options.WorkerConfig,
 		MockAdminClient:               options.MockAdminClient,
 		DomainReplicationTaskExecutor: domain.NewReplicationTaskExecutor(testBase.DomainManager, clock.NewRealTimeSource(), logger),
@@ -285,6 +290,7 @@ func NewPersistenceTestCluster(t *testing.T, clusterConfig *TestClusterConfig) t
 	clusterConfig.Persistence.DBPluginName = TestFlags.SQLPluginName
 
 	var testCluster testcluster.PersistenceTestCluster
+	var err error
 	if TestFlags.PersistenceType == config.StoreTypeCassandra {
 		// TODO refactor to support other NoSQL
 		ops := clusterConfig.Persistence
@@ -302,18 +308,26 @@ func NewPersistenceTestCluster(t *testing.T, clusterConfig *TestClusterConfig) t
 		})
 	} else if TestFlags.PersistenceType == config.StoreTypeSQL {
 		var ops *persistencetests.TestBaseOptions
-		if TestFlags.SQLPluginName == mysql.PluginName {
+		switch TestFlags.SQLPluginName {
+		case mysql.PluginName:
 			testflags.RequireMySQL(t)
-			ops = mysql.GetTestClusterOption()
-		} else if TestFlags.SQLPluginName == postgres.PluginName {
+			ops, err = mysql.GetTestClusterOption()
+		case postgres.PluginName:
 			testflags.RequirePostgres(t)
-			ops = postgres.GetTestClusterOption()
-		} else {
-			panic("not supported plugin " + TestFlags.SQLPluginName)
+			ops, err = postgres.GetTestClusterOption()
+		default:
+			t.Fatal("not supported plugin " + TestFlags.SQLPluginName)
 		}
-		testCluster = sql.NewTestCluster(TestFlags.SQLPluginName, clusterConfig.Persistence.DBName, ops.DBUsername, ops.DBPassword, ops.DBHost, ops.DBPort, ops.SchemaDir)
+
+		if err != nil {
+			t.Fatal(err)
+		}
+		testCluster, err = sql.NewTestCluster(TestFlags.SQLPluginName, clusterConfig.Persistence.DBName, ops.DBUsername, ops.DBPassword, ops.DBHost, ops.DBPort, ops.SchemaDir)
+		if err != nil {
+			t.Fatal(err)
+		}
 	} else {
-		panic("not supported storage type" + TestFlags.PersistenceType)
+		t.Fatal("not supported storage type" + TestFlags.PersistenceType)
 	}
 	return testCluster
 }
@@ -336,7 +350,7 @@ func newArchiverBase(enabled bool, logger log.Logger) *ArchiverBase {
 	if !enabled {
 		return &ArchiverBase{
 			metadata: archiver.NewArchivalMetadata(dcCollection, "", false, "", false, &config.ArchivalDomainDefaults{}),
-			provider: provider.NewArchiverProvider(nil, nil),
+			provider: provider.NewNoOpArchiverProvider(),
 		}
 	}
 
@@ -410,6 +424,20 @@ func (tc *TestCluster) GetAdminClient() AdminClient {
 // GetHistoryClient returns a history client from the test cluster
 func (tc *TestCluster) GetHistoryClient() HistoryClient {
 	return tc.host.GetHistoryClient()
+}
+
+// GetMatchingClient returns a matching client from the test cluster
+func (tc *TestCluster) GetMatchingClient() MatchingClient {
+	return tc.host.GetMatchingClient()
+}
+
+func (tc *TestCluster) GetMatchingClients() []MatchingClient {
+	clients := tc.host.GetMatchingClients()
+	result := make([]MatchingClient, 0, len(clients))
+	for _, client := range clients {
+		result = append(result, client)
+	}
+	return result
 }
 
 // GetExecutionManagerFactory returns an execution manager factory from the test cluster

@@ -25,9 +25,11 @@ package membership
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/uber/cadence/common"
+	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/metrics"
@@ -46,6 +48,7 @@ type (
 	// Resolver provides membership information for all cadence services.
 	Resolver interface {
 		common.Daemon
+
 		// WhoAmI returns self host details.
 		// To be consistent with peer provider, it is advised to use peer provider
 		// to return this information
@@ -54,7 +57,7 @@ type (
 		// EvictSelf evicts this member from the membership ring. After this method is
 		// called, other members should discover that this node is no longer part of the
 		// ring.
-		//This primitive is useful to carry out graceful host shutdown during deployments.
+		// This primitive is useful to carry out graceful host shutdown during deployments.
 		EvictSelf() error
 
 		// Lookup will return host which is an owner for provided key.
@@ -84,6 +87,7 @@ type MultiringResolver struct {
 	status  int32
 
 	provider PeerProvider
+	mu       sync.Mutex
 	rings    map[string]*ring
 }
 
@@ -95,7 +99,7 @@ func NewResolver(
 	logger log.Logger,
 	metrics metrics.Client,
 ) (*MultiringResolver, error) {
-	return NewMultiringResolver(service.List, provider, logger.WithTags(tag.ComponentServiceResolver), metrics), nil
+	return NewMultiringResolver(service.ListWithRing, provider, logger.WithTags(tag.ComponentServiceResolver), metrics), nil
 }
 
 // NewMultiringResolver creates hashrings for all services
@@ -110,10 +114,11 @@ func NewMultiringResolver(
 		provider: provider,
 		rings:    make(map[string]*ring),
 		metrics:  metricsClient,
+		mu:       sync.Mutex{},
 	}
 
 	for _, s := range services {
-		rpo.rings[s] = newHashring(s, provider, logger, metricsClient.Scope(metrics.HashringScope))
+		rpo.rings[s] = newHashring(s, provider, clock.NewRealTimeSource(), logger, metricsClient.Scope(metrics.HashringScope))
 	}
 	return rpo
 }
@@ -130,6 +135,8 @@ func (rpo *MultiringResolver) Start() {
 
 	rpo.provider.Start()
 
+	rpo.mu.Lock()
+	defer rpo.mu.Unlock()
 	for _, ring := range rpo.rings {
 		ring.Start()
 	}
@@ -145,6 +152,8 @@ func (rpo *MultiringResolver) Stop() {
 		return
 	}
 
+	rpo.mu.Lock()
+	defer rpo.mu.Unlock()
 	for _, ring := range rpo.rings {
 		ring.Stop()
 	}
@@ -163,6 +172,8 @@ func (rpo *MultiringResolver) EvictSelf() error {
 }
 
 func (rpo *MultiringResolver) getRing(service string) (*ring, error) {
+	rpo.mu.Lock()
+	defer rpo.mu.Unlock()
 	ring, found := rpo.rings[service]
 	if !found {
 		return nil, fmt.Errorf("service %q is not tracked by Resolver", service)
@@ -222,4 +233,8 @@ func (rpo *MultiringResolver) MemberCount(service string) (int, error) {
 		return 0, err
 	}
 	return ring.MemberCount(), nil
+}
+
+func (ce *ChangedEvent) Empty() bool {
+	return len(ce.HostsAdded) == 0 && len(ce.HostsUpdated) == 0 && len(ce.HostsRemoved) == 0
 }

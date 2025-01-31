@@ -29,6 +29,7 @@ import (
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/cluster"
+	"github.com/uber/cadence/common/config"
 	"github.com/uber/cadence/common/domain"
 	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/log/tag"
@@ -39,6 +40,7 @@ import (
 	"github.com/uber/cadence/service/worker/archiver"
 	"github.com/uber/cadence/service/worker/asyncworkflow"
 	"github.com/uber/cadence/service/worker/batcher"
+	"github.com/uber/cadence/service/worker/diagnostics"
 	"github.com/uber/cadence/service/worker/esanalyzer"
 	"github.com/uber/cadence/service/worker/failovermanager"
 	"github.com/uber/cadence/service/worker/indexer"
@@ -67,6 +69,7 @@ type (
 
 	// Config contains all the service config for worker
 	Config struct {
+		KafkaCfg                            config.KafkaConfig
 		ArchiverConfig                      *archiver.Config
 		IndexerCfg                          *indexer.Config
 		ScannerCfg                          *scanner.Config
@@ -94,9 +97,10 @@ func NewService(params *resource.Params) (resource.Resource, error) {
 		params,
 		service.Worker,
 		&service.Config{
-			PersistenceMaxQPS:       serviceConfig.PersistenceMaxQPS,
-			PersistenceGlobalMaxQPS: serviceConfig.PersistenceGlobalMaxQPS,
-			ThrottledLoggerMaxRPS:   serviceConfig.ThrottledLogRPS,
+			PersistenceMaxQPS:        serviceConfig.PersistenceMaxQPS,
+			PersistenceGlobalMaxQPS:  serviceConfig.PersistenceGlobalMaxQPS,
+			ThrottledLoggerMaxRPS:    serviceConfig.ThrottledLogRPS,
+			IsErrorRetryableFunction: common.IsServiceTransientError,
 			// worker service doesn't need visibility config as it never call visibilityManager API
 		},
 	)
@@ -146,6 +150,7 @@ func NewConfig(params *resource.Params) *Config {
 			},
 			MaxWorkflowRetentionInDays: dc.GetIntProperty(dynamicconfig.MaxRetentionDays),
 		},
+		KafkaCfg: params.KafkaConfig,
 		BatcherCfg: &batcher.Config{
 			AdminOperationToken: dc.GetStringProperty(dynamicconfig.AdminOperationToken),
 			ClusterMetadata:     params.ClusterMetadata,
@@ -182,9 +187,10 @@ func NewConfig(params *resource.Params) *Config {
 		HostName:                            params.HostName,
 	}
 	advancedVisWritingMode := dc.GetStringProperty(
-		dynamicconfig.AdvancedVisibilityWritingMode,
+		dynamicconfig.WriteVisibilityStoreName,
 	)
-	if common.IsAdvancedVisibilityWritingEnabled(advancedVisWritingMode(), params.PersistenceConfig.IsAdvancedVisibilityConfigExist()) {
+
+	if shouldStartIndexer(params, advancedVisWritingMode) {
 		config.IndexerCfg = &indexer.Config{
 			IndexerConcurrency:             dc.GetIntProperty(dynamicconfig.WorkerIndexerConcurrency),
 			ESProcessorNumOfWorkers:        dc.GetIntProperty(dynamicconfig.WorkerESProcessorNumOfWorkers),
@@ -195,6 +201,7 @@ func NewConfig(params *resource.Params) *Config {
 			EnableQueryAttributeValidation: dc.GetBoolProperty(dynamicconfig.EnableQueryAttributeValidation),
 		}
 	}
+
 	return config
 }
 
@@ -213,10 +220,15 @@ func (s *Service) Start() {
 	s.startScanner()
 	s.startFixerWorkflowWorker()
 	if s.config.IndexerCfg != nil {
-		s.startIndexer()
+		if shouldStartMigrationIndexer(s.params) {
+			s.startMigrationDualIndexer()
+		} else {
+			s.startIndexer()
+		}
 	}
 
 	s.startReplicator()
+	s.startDiagnostics()
 
 	if s.GetArchivalMetadata().GetHistoryConfig().ClusterConfiguredForArchival() {
 		s.startArchiver()
@@ -235,10 +247,8 @@ func (s *Service) Start() {
 		s.startFailoverManager()
 	}
 
-	if s.config.EnableAsyncWorkflowConsumption() {
-		cm := s.startAsyncWorkflowConsumerManager()
-		defer cm.Stop()
-	}
+	cm := s.startAsyncWorkflowConsumerManager()
+	defer cm.Stop()
 
 	logger.Info("worker started", tag.ComponentWorker)
 	<-s.stopC
@@ -282,7 +292,9 @@ func (s *Service) startESAnalyzer() {
 		s.GetFrontendClient(),
 		s.GetClientBean(),
 		s.params.ESClient,
+		s.params.PinotClient,
 		s.params.ESConfig,
+		s.params.PinotConfig,
 		s.GetLogger(),
 		s.params.MetricScope,
 		s.Resource,
@@ -329,6 +341,22 @@ func (s *Service) startFixerWorkflowWorker() {
 	}
 }
 
+func (s *Service) startDiagnostics() {
+	params := diagnostics.Params{
+		ServiceClient:   s.params.PublicClient,
+		MetricsClient:   s.GetMetricsClient(),
+		MessagingClient: s.GetMessagingClient(),
+		TallyScope:      s.params.MetricScope,
+		ClientBean:      s.GetClientBean(),
+		Logger:          s.GetLogger(),
+		Invariants:      s.params.DiagnosticsInvariants,
+	}
+	if err := diagnostics.New(params).Start(); err != nil {
+		s.Stop()
+		s.GetLogger().Fatal("error starting diagnostics", tag.Error(err))
+	}
+}
+
 func (s *Service) startReplicator() {
 	domainReplicationTaskExecutor := domain.NewReplicationTaskExecutor(
 		s.Resource.GetDomainManager(),
@@ -358,11 +386,31 @@ func (s *Service) startIndexer() {
 		s.GetMessagingClient(),
 		s.params.ESClient,
 		s.params.ESConfig.Indices[common.VisibilityAppName],
+		s.params.ESConfig.ConsumerName,
 		s.GetLogger(),
 		s.GetMetricsClient(),
 	)
 	if err := visibilityIndexer.Start(); err != nil {
 		visibilityIndexer.Stop()
+		s.GetLogger().Fatal("fail to start indexer", tag.Error(err))
+	}
+}
+
+func (s *Service) startMigrationDualIndexer() {
+	visibilityDualIndexer := indexer.NewMigrationDualIndexer(
+		s.config.IndexerCfg,
+		s.GetMessagingClient(),
+		s.params.ESClient,
+		s.params.OSClient,
+		s.params.ESConfig.Indices[common.VisibilityAppName],
+		s.params.OSConfig.Indices[common.VisibilityAppName],
+		s.params.ESConfig.ConsumerName,
+		s.params.OSConfig.ConsumerName,
+		s.GetLogger(),
+		s.GetMetricsClient(),
+	)
+	if err := visibilityDualIndexer.Start(); err != nil {
+		// not need to call visibilityDualIndexer.Stop() since it has been called inside Start()
 		s.GetLogger().Fatal("fail to start indexer", tag.Error(err))
 	}
 }
@@ -406,6 +454,7 @@ func (s *Service) startAsyncWorkflowConsumerManager() common.Daemon {
 		s.GetDomainCache(),
 		s.Resource.GetAsyncWorkflowQueueProvider(),
 		s.GetFrontendClient(),
+		asyncworkflow.WithEnabledPropertyFn(s.config.EnableAsyncWorkflowConsumption),
 	)
 	cm.Start()
 	return cm
@@ -463,4 +512,32 @@ func getDomainID(domain string) string {
 		domainID = common.ShadowerDomainID
 	}
 	return domainID
+}
+
+func shouldStartIndexer(params *resource.Params, advancedWritingMode dynamicconfig.StringPropertyFn) bool {
+	// only start indexer when advanced visibility writing mode is set to on and advanced visibility store is configured
+	if !common.IsAdvancedVisibilityWritingEnabled(advancedWritingMode(), params.PersistenceConfig.IsAdvancedVisibilityConfigExist()) {
+		return false
+	}
+
+	// when it is using pinot and not in migration mode, indexer should not be started since Pinot will direclty ingest from kafka
+	if params.PersistenceConfig.AdvancedVisibilityStore == common.PinotVisibilityStoreName &&
+		params.PinotConfig != nil &&
+		!params.PinotConfig.Migration.Enabled {
+		return false
+	}
+
+	return true
+}
+
+func shouldStartMigrationIndexer(params *resource.Params) bool {
+	// not need to check IsAdvancedVisibilityWritingEnabled here since it was already checked or the s.config.IndexerCfg will be nil
+	// when it is using OS and in migration mode, we should start dual indexer to write to both ES and OS
+	if params.PersistenceConfig.AdvancedVisibilityStore == common.OSVisibilityStoreName &&
+		params.OSConfig != nil &&
+		params.OSConfig.Migration.Enabled {
+		return true
+	}
+
+	return false
 }

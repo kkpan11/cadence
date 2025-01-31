@@ -500,7 +500,7 @@ func (m *MetadataPersistenceSuiteV2) TestConcurrentCreateDomain() {
 		m.Equal(failoverVersion, resp.FailoverVersion)
 		m.Equal(common.InitialPreviousFailoverVersion, resp.PreviousFailoverVersion)
 
-		//check domain data
+		// check domain data
 		ss := strings.Split(resp.Info.Data["k0"], "-")
 		m.Equal(2, len(ss))
 		vi, err := strconv.Atoi(ss[1])
@@ -689,7 +689,7 @@ func (m *MetadataPersistenceSuiteV2) TestConcurrentUpdateDomain() {
 	m.Equal(failoverVersion, resp3.FailoverVersion)
 	m.Equal(common.InitialPreviousFailoverVersion, resp3.PreviousFailoverVersion)
 
-	//check domain data
+	// check domain data
 	ss := strings.Split(resp3.Info.Data["k0"], "-")
 	m.Equal(2, len(ss))
 	vi, err := strconv.Atoi(ss[1])
@@ -792,7 +792,7 @@ func (m *MetadataPersistenceSuiteV2) TestUpdateDomain() {
 	updatedStatus := p.DomainStatusDeprecated
 	updatedDescription := "description-updated"
 	updatedOwner := "owner-updated"
-	//This will overriding the previous key-value pair
+	// This will overriding the previous key-value pair
 	updatedData := map[string]string{"k1": "v2"}
 	updatedRetention := int32(20)
 	updatedEmitMetric := false
@@ -1182,8 +1182,14 @@ func (m *MetadataPersistenceSuiteV2) TestListDomains() {
 				VisibilityArchivalStatus: types.ArchivalStatusEnabled,
 				VisibilityArchivalURI:    "test://visibility/uri",
 				BadBinaries:              testBinaries1,
-				IsolationGroups:          types.IsolationGroupConfiguration{},
-				AsyncWorkflowConfig:      types.AsyncWorkflowConfiguration{},
+				IsolationGroups: types.IsolationGroupConfiguration{
+					"name1": types.IsolationGroupPartition{Name: "name1"},
+					"name2": types.IsolationGroupPartition{Name: "name2"},
+				},
+				AsyncWorkflowConfig: types.AsyncWorkflowConfiguration{
+					Enabled:             true,
+					PredefinedQueueName: "queue1",
+				},
 			},
 			ReplicationConfig: &p.DomainReplicationConfig{
 				ActiveClusterName: clusterActive1,
@@ -1211,8 +1217,13 @@ func (m *MetadataPersistenceSuiteV2) TestListDomains() {
 				VisibilityArchivalStatus: types.ArchivalStatusDisabled,
 				VisibilityArchivalURI:    "",
 				BadBinaries:              testBinaries2,
-				IsolationGroups:          types.IsolationGroupConfiguration{},
-				AsyncWorkflowConfig:      types.AsyncWorkflowConfiguration{},
+				IsolationGroups: types.IsolationGroupConfiguration{
+					"name3": types.IsolationGroupPartition{Name: "name3"},
+				},
+				AsyncWorkflowConfig: types.AsyncWorkflowConfiguration{
+					Enabled:             false,
+					PredefinedQueueName: "queue2",
+				},
 			},
 			ReplicationConfig: &p.DomainReplicationConfig{
 				ActiveClusterName: clusterActive2,

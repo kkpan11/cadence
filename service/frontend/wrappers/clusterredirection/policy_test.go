@@ -25,9 +25,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/cache"
 	"github.com/uber/cadence/common/cluster"
@@ -67,13 +67,6 @@ type (
 func TestNoopDCRedirectionPolicySuite(t *testing.T) {
 	s := new(noopDCRedirectionPolicySuite)
 	suite.Run(t, s)
-}
-
-func (s *noopDCRedirectionPolicySuite) SetupSuite() {
-}
-
-func (s *noopDCRedirectionPolicySuite) TearDownSuite() {
-
 }
 
 func (s *noopDCRedirectionPolicySuite) SetupTest() {
@@ -343,6 +336,79 @@ func (s *selectedAPIsForwardingRedirectionPolicySuite) TestGetTargetDataCenter_G
 	s.Equal(2*len(selectedAPIsForwardingRedirectionPolicyAPIAllowlist), alternativeClustercallCount)
 }
 
+func (s *selectedAPIsForwardingRedirectionPolicySuite) TestGetTargetDataCenter_GlobalDomain_NoDomainInCache() {
+	currentClustercallCount := 0
+	alternativeClustercallCount := 0
+	callFn := func(targetCluster string) error {
+		switch targetCluster {
+		case s.currentClusterName:
+			currentClustercallCount++
+			return nil
+		case s.alternativeClusterName:
+			alternativeClustercallCount++
+			return &types.DomainNotActiveError{
+				CurrentCluster: s.alternativeClusterName,
+				ActiveCluster:  s.currentClusterName,
+			}
+		default:
+			panic(fmt.Sprintf("unknown cluster name %v", targetCluster))
+		}
+	}
+
+	expectedErr := fmt.Errorf("some random error")
+	s.mockDomainCache.EXPECT().GetDomainByID(s.domainID).Return(nil, expectedErr).Times(len(selectedAPIsForwardingRedirectionPolicyAPIAllowlist))
+	s.mockDomainCache.EXPECT().GetDomain(s.domainName).Return(nil, expectedErr).Times(len(selectedAPIsForwardingRedirectionPolicyAPIAllowlist))
+
+	for apiName := range selectedAPIsForwardingRedirectionPolicyAPIAllowlist {
+		err := s.policy.WithDomainIDRedirect(context.Background(), s.domainID, apiName, callFn)
+		s.Error(err)
+		s.Equal(expectedErr.Error(), err.Error())
+
+		err = s.policy.WithDomainNameRedirect(context.Background(), s.domainName, apiName, callFn)
+		s.Error(err)
+		s.Equal(expectedErr.Error(), err.Error())
+	}
+
+	// Ensure there were no calls to the target clusters
+	s.Equal(0, currentClustercallCount)
+	s.Equal(0, alternativeClustercallCount)
+}
+
+func (s *selectedAPIsForwardingRedirectionPolicySuite) TestGetTargetDataCenter_GlobalDomain_Forwarding_DeprecatedDomain() {
+	s.setupGlobalDeprecatedDomainWithTwoReplicationCluster(true, false)
+
+	currentClustercallCount := 0
+	alternativeClustercallCount := 0
+	callFn := func(targetCluster string) error {
+		switch targetCluster {
+		case s.currentClusterName:
+			currentClustercallCount++
+			return nil
+		case s.alternativeClusterName:
+			alternativeClustercallCount++
+			return &types.DomainNotActiveError{
+				CurrentCluster: s.alternativeClusterName,
+				ActiveCluster:  s.currentClusterName,
+			}
+		default:
+			panic(fmt.Sprintf("unknown cluster name %v", targetCluster))
+		}
+	}
+
+	for apiName := range selectedAPIsForwardingRedirectionPolicyAPIAllowlist {
+		err := s.policy.WithDomainIDRedirect(context.Background(), s.domainID, apiName, callFn)
+		s.Error(err)
+		s.Equal("domain is deprecated.", err.Error())
+
+		err = s.policy.WithDomainNameRedirect(context.Background(), s.domainName, apiName, callFn)
+		s.Error(err)
+		s.Equal("domain is deprecated or deleted", err.Error())
+	}
+
+	s.Equal(0, currentClustercallCount)
+	s.Equal(0, alternativeClustercallCount)
+}
+
 func (s *selectedAPIsForwardingRedirectionPolicySuite) setupLocalDomain() {
 	domainEntry := cache.NewLocalDomainCacheEntryForTest(
 		&persistence.DomainInfo{ID: s.domainID, Name: s.domainName},
@@ -361,6 +427,29 @@ func (s *selectedAPIsForwardingRedirectionPolicySuite) setupGlobalDomainWithTwoR
 	}
 	domainEntry := cache.NewGlobalDomainCacheEntryForTest(
 		&persistence.DomainInfo{ID: s.domainID, Name: s.domainName},
+		&persistence.DomainConfig{Retention: 1},
+		&persistence.DomainReplicationConfig{
+			ActiveClusterName: activeCluster,
+			Clusters: []*persistence.ClusterReplicationConfig{
+				{ClusterName: cluster.TestCurrentClusterName},
+				{ClusterName: cluster.TestAlternativeClusterName},
+			},
+		},
+		1234, // not used
+	)
+
+	s.mockDomainCache.EXPECT().GetDomainByID(s.domainID).Return(domainEntry, nil).AnyTimes()
+	s.mockDomainCache.EXPECT().GetDomain(s.domainName).Return(domainEntry, nil).AnyTimes()
+	s.mockConfig.EnableDomainNotActiveAutoForwarding = dynamicconfig.GetBoolPropertyFnFilteredByDomain(forwardingEnabled)
+}
+
+func (s *selectedAPIsForwardingRedirectionPolicySuite) setupGlobalDeprecatedDomainWithTwoReplicationCluster(forwardingEnabled bool, isRecordActive bool) {
+	activeCluster := s.alternativeClusterName
+	if isRecordActive {
+		activeCluster = s.currentClusterName
+	}
+	domainEntry := cache.NewGlobalDomainCacheEntryForTest(
+		&persistence.DomainInfo{ID: s.domainID, Name: s.domainName, Status: persistence.DomainStatusDeprecated},
 		&persistence.DomainConfig{Retention: 1},
 		&persistence.DomainReplicationConfig{
 			ActiveClusterName: activeCluster,

@@ -42,11 +42,9 @@ const (
 // Insert a new record to domain
 // return types.DomainAlreadyExistsError error if failed or already exists
 // Must return ConditionFailure error if other condition doesn't match
-func (db *cdb) InsertDomain(
-	ctx context.Context,
-	row *nosqlplugin.DomainRow,
-) error {
-	query := db.session.Query(templateCreateDomainQuery, row.Info.ID, row.Info.Name).WithContext(ctx)
+func (db *cdb) InsertDomain(ctx context.Context, row *nosqlplugin.DomainRow) error {
+	timeStamp := db.timeSrc.Now()
+	query := db.session.Query(templateCreateDomainQuery, row.Info.ID, row.Info.Name, timeStamp).WithContext(ctx)
 	applied, err := query.MapScanCAS(make(map[string]interface{}))
 	if err != nil {
 		return err
@@ -101,6 +99,7 @@ func (db *cdb) InsertDomain(
 		failoverEndTime,
 		row.LastUpdatedTime.UnixNano(),
 		metadataNotificationVersion,
+		timeStamp,
 	)
 	db.updateMetadataBatch(batch, metadataNotificationVersion)
 
@@ -163,10 +162,7 @@ func (db *cdb) updateMetadataBatch(
 }
 
 // Update domain
-func (db *cdb) UpdateDomain(
-	ctx context.Context,
-	row *nosqlplugin.DomainRow,
-) error {
+func (db *cdb) UpdateDomain(ctx context.Context, row *nosqlplugin.DomainRow) error {
 	batch := db.session.NewBatch(gocql.LoggedBatch).WithContext(ctx)
 	failoverEndTime := emptyFailoverEndTime
 	if row.FailoverEndTime != nil {
@@ -251,7 +247,7 @@ func (db *cdb) SelectDomain(
 	}
 
 	info := &persistence.DomainInfo{}
-	config := &nosqlplugin.NoSQLInternalDomainConfig{}
+	config := &persistence.InternalDomainConfig{}
 	replicationConfig := &persistence.DomainReplicationConfig{}
 
 	// because of encoding/types, we can't directly read from config struct
@@ -353,7 +349,7 @@ func (db *cdb) SelectAllDomains(
 	var name string
 	domain := &nosqlplugin.DomainRow{
 		Info:              &persistence.DomainInfo{},
-		Config:            &nosqlplugin.NoSQLInternalDomainConfig{},
+		Config:            &persistence.InternalDomainConfig{},
 		ReplicationConfig: &persistence.DomainReplicationConfig{},
 	}
 	var replicationClusters []map[string]interface{}
@@ -416,12 +412,16 @@ func (db *cdb) SelectAllDomains(
 		replicationClusters = []map[string]interface{}{}
 		badBinariesData = []byte("")
 		badBinariesDataEncoding = ""
+		isolationGroups = []byte("")
+		isolationGroupsEncoding = ""
+		asyncWFConfigData = []byte("")
+		asyncWFConfigEncoding = ""
 		failoverEndTime = 0
 		lastUpdateTime = 0
 		retentionDays = 0
 		domain = &nosqlplugin.DomainRow{
 			Info:              &persistence.DomainInfo{},
-			Config:            &nosqlplugin.NoSQLInternalDomainConfig{},
+			Config:            &persistence.InternalDomainConfig{},
 			ReplicationConfig: &persistence.DomainReplicationConfig{},
 		}
 	}
@@ -434,11 +434,7 @@ func (db *cdb) SelectAllDomains(
 }
 
 // Delete a domain, either by domainID or domainName
-func (db *cdb) DeleteDomain(
-	ctx context.Context,
-	domainID *string,
-	domainName *string,
-) error {
+func (db *cdb) DeleteDomain(ctx context.Context, domainID *string, domainName *string) error {
 	if domainName == nil && domainID == nil {
 		return fmt.Errorf("must provide either domainID or domainName")
 	}
@@ -455,26 +451,24 @@ func (db *cdb) DeleteDomain(
 		}
 		domainName = common.StringPtr(name)
 	} else {
-		var ID string
+		var id string
 		query := db.session.Query(templateGetDomainByNameQueryV2, constDomainPartition, *domainName).WithContext(ctx)
-		err := query.Scan(&ID, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		err := query.Scan(&id, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		if err != nil {
 			if db.client.IsNotFoundError(err) {
 				return nil
 			}
 			return err
 		}
-		domainID = common.StringPtr(ID)
+		domainID = common.StringPtr(id)
 	}
 
 	return db.deleteDomain(ctx, *domainName, *domainID)
 }
 
-func (db *cdb) SelectDomainMetadata(
-	ctx context.Context,
-) (int64, error) {
+func (db *cdb) SelectDomainMetadata(ctx context.Context) (int64, error) {
 	var notificationVersion int64
-	query := db.session.Query(templateGetMetadataQueryV2, constDomainPartition, domainMetadataRecordName)
+	query := db.session.Query(templateGetMetadataQueryV2, constDomainPartition, domainMetadataRecordName).WithContext(ctx)
 	err := query.Scan(&notificationVersion)
 	if err != nil {
 		if db.client.IsNotFoundError(err) {
@@ -488,10 +482,7 @@ func (db *cdb) SelectDomainMetadata(
 	return notificationVersion, nil
 }
 
-func (db *cdb) deleteDomain(
-	ctx context.Context,
-	name, ID string,
-) error {
+func (db *cdb) deleteDomain(ctx context.Context, name, ID string) error {
 	query := db.session.Query(templateDeleteDomainByNameQueryV2, constDomainPartition, name).WithContext(ctx)
 	if err := db.executeWithConsistencyAll(query); err != nil {
 		return err

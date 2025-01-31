@@ -36,6 +36,7 @@ import (
 	"github.com/uber/cadence/common/asyncworkflow/queueconfigapi"
 	"github.com/uber/cadence/common/backoff"
 	"github.com/uber/cadence/common/client"
+	"github.com/uber/cadence/common/clock"
 	"github.com/uber/cadence/common/codec"
 	"github.com/uber/cadence/common/definition"
 	"github.com/uber/cadence/common/domain"
@@ -53,6 +54,7 @@ import (
 	"github.com/uber/cadence/service/frontend/config"
 	"github.com/uber/cadence/service/frontend/validate"
 	"github.com/uber/cadence/service/history/execution"
+	"github.com/uber/cadence/service/history/lookup"
 )
 
 const (
@@ -130,6 +132,7 @@ func NewHandler(
 			resource.GetDomainReplicationQueue(),
 			resource.GetLogger(),
 			resource.GetMetricsClient(),
+			clock.NewRealTimeSource(),
 		),
 		domainFailoverWatcher: domain.NewFailoverWatcher(
 			resource.GetDomainCache(),
@@ -258,10 +261,9 @@ func (adh *adminHandlerImpl) DescribeWorkflowExecution(
 	}
 
 	shardID := common.WorkflowIDToHistoryShard(request.Execution.WorkflowID, adh.numberOfHistoryShards)
-	shardIDstr := string(rune(shardID)) // originally `string(int_shard_id)`, but changing it will change the ring hashing
 	shardIDForOutput := strconv.Itoa(shardID)
 
-	historyHost, err := adh.GetMembershipResolver().Lookup(service.History, shardIDstr)
+	historyHost, err := lookup.HistoryServerByShardID(adh.GetMembershipResolver(), shardID)
 	if err != nil {
 		return nil, adh.error(err, scope)
 	}
@@ -663,16 +665,15 @@ func (adh *adminHandlerImpl) DescribeShardDistribution(
 	_, sw := adh.startRequestProfile(ctx, metrics.AdminDescribeShardDistributionScope)
 	defer sw.Stop()
 
-	numShards := adh.config.NumHistoryShards
 	resp = &types.DescribeShardDistributionResponse{
-		NumberOfShards: int32(numShards),
+		NumberOfShards: int32(adh.numberOfHistoryShards),
 		Shards:         make(map[int32]string),
 	}
 
 	offset := int(request.PageID * request.PageSize)
 	nextPageStart := offset + int(request.PageSize)
-	for shardID := offset; shardID < numShards && shardID < nextPageStart; shardID++ {
-		info, err := adh.GetMembershipResolver().Lookup(service.History, string(rune(shardID)))
+	for shardID := offset; shardID < adh.numberOfHistoryShards && shardID < nextPageStart; shardID++ {
+		info, err := lookup.HistoryServerByShardID(adh.GetMembershipResolver(), shardID)
 		if err != nil {
 			resp.Shards[int32(shardID)] = "unknown"
 		} else {
@@ -875,7 +876,7 @@ func (adh *adminHandlerImpl) DescribeCluster(
 		}
 
 		var rings []*types.RingInfo
-		for _, role := range service.List {
+		for _, role := range service.ListWithRing {
 			var servers []*types.HostInfo
 			members, err := monitor.Members(role)
 			if err != nil {
@@ -1750,7 +1751,7 @@ func (adh *adminHandlerImpl) UpdateDomainIsolationGroups(ctx context.Context, re
 
 func (adh *adminHandlerImpl) GetDomainAsyncWorkflowConfiguraton(ctx context.Context, request *types.GetDomainAsyncWorkflowConfiguratonRequest) (_ *types.GetDomainAsyncWorkflowConfiguratonResponse, retError error) {
 	defer func() { log.CapturePanic(recover(), adh.GetLogger(), &retError) }()
-	scope, sw := adh.startRequestProfile(ctx, metrics.UpdateDomainAsyncWorkflowConfiguraton)
+	scope, sw := adh.startRequestProfile(ctx, metrics.GetDomainAsyncWorkflowConfiguraton)
 	defer sw.Stop()
 	if request == nil {
 		return nil, adh.error(validate.ErrRequestNotSet, scope)
@@ -1774,6 +1775,50 @@ func (adh *adminHandlerImpl) UpdateDomainAsyncWorkflowConfiguraton(ctx context.C
 		return nil, adh.error(err, scope)
 	}
 	return resp, nil
+}
+
+func (adh *adminHandlerImpl) UpdateTaskListPartitionConfig(ctx context.Context, request *types.UpdateTaskListPartitionConfigRequest) (_ *types.UpdateTaskListPartitionConfigResponse, retError error) {
+	defer func() { log.CapturePanic(recover(), adh.GetLogger(), &retError) }()
+	scope, sw := adh.startRequestProfile(ctx, metrics.UpdateTaskListPartitionConfig)
+	defer sw.Stop()
+	if request == nil {
+		return nil, adh.error(validate.ErrRequestNotSet, scope)
+	}
+	domainID, err := adh.GetDomainCache().GetDomainID(request.Domain)
+	if err != nil {
+		return nil, adh.error(err, scope)
+	}
+	if request.TaskList == nil {
+		return nil, adh.error(validate.ErrTaskListNotSet, scope)
+	}
+	if request.TaskList.Kind == nil {
+		return nil, adh.error(&types.BadRequestError{Message: "Task list kind not set."}, scope)
+	}
+	if *request.TaskList.Kind != types.TaskListKindNormal {
+		return nil, adh.error(&types.BadRequestError{Message: "Only normal tasklist's partition config can be updated."}, scope)
+	}
+	if request.TaskListType == nil {
+		return nil, adh.error(&types.BadRequestError{Message: "Task list type not set."}, scope)
+	}
+	if request.PartitionConfig == nil {
+		return nil, adh.error(&types.BadRequestError{Message: "Task list partition config is not set in the request."}, scope)
+	}
+	if request.PartitionConfig.NumWritePartitions > request.PartitionConfig.NumReadPartitions {
+		return nil, adh.error(&types.BadRequestError{Message: "The number of write partitions cannot be larger than the number of read partitions."}, scope)
+	}
+	if request.PartitionConfig.NumWritePartitions <= 0 {
+		return nil, adh.error(&types.BadRequestError{Message: "The number of partitions must be larger than 0."}, scope)
+	}
+	_, err = adh.GetMatchingClient().UpdateTaskListPartitionConfig(ctx, &types.MatchingUpdateTaskListPartitionConfigRequest{
+		DomainUUID:      domainID,
+		TaskList:        request.TaskList,
+		TaskListType:    request.TaskListType,
+		PartitionConfig: request.PartitionConfig,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &types.UpdateTaskListPartitionConfigResponse{}, nil
 }
 
 func convertFromDataBlob(blob *types.DataBlob) (interface{}, error) {

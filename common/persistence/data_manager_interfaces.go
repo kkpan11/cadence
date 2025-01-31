@@ -20,7 +20,7 @@
 // THE SOFTWARE.
 
 // Geneate rate limiter wrappers.
-//go:generate mockgen -package $GOPACKAGE -destination dataManagerInterfaces_mock.go -self_package github.com/uber/cadence/common/persistence github.com/uber/cadence/common/persistence Task,ShardManager,ExecutionManager,ExecutionManagerFactory,TaskManager,HistoryManager,DomainManager,QueueManager,ConfigStoreManager
+//go:generate mockgen -package $GOPACKAGE -destination data_manager_interfaces_mock.go -self_package github.com/uber/cadence/common/persistence github.com/uber/cadence/common/persistence Task,ShardManager,ExecutionManager,ExecutionManagerFactory,TaskManager,HistoryManager,DomainManager,QueueManager,ConfigStoreManager
 //go:generate gowrap gen -g -p . -i ConfigStoreManager -t ./wrappers/templates/ratelimited.tmpl -o wrappers/ratelimited/configstore_generated.go
 //go:generate gowrap gen -g -p . -i DomainManager -t ./wrappers/templates/ratelimited.tmpl -o wrappers/ratelimited/domain_generated.go
 //go:generate gowrap gen -g -p . -i HistoryManager -t ./wrappers/templates/ratelimited.tmpl -o wrappers/ratelimited/history_generated.go
@@ -190,7 +190,8 @@ const (
 	TransferTaskTypeApplyParentClosePolicy
 )
 
-// Types of cross-cluster tasks
+// Deprecated: Types of cross-cluster tasks. These are deprecated as of
+// May 2024
 const (
 	CrossClusterTaskTypeStartChildExecution = iota + 1
 	CrossClusterTaskTypeCancelExecution
@@ -217,6 +218,32 @@ const (
 	TaskTypeWorkflowBackoffTimer
 )
 
+// WorkflowRequestType is the type of workflow request
+type WorkflowRequestType int
+
+// Types of workflow requests
+const (
+	WorkflowRequestTypeStart WorkflowRequestType = iota
+	WorkflowRequestTypeSignal
+	WorkflowRequestTypeCancel
+	WorkflowRequestTypeReset
+)
+
+// CreateWorkflowRequestMode is the mode of create workflow request
+type CreateWorkflowRequestMode int
+
+// Modes of create workflow request
+const (
+	// Fail if data with the same domain_id, workflow_id, request_id exists
+	// It is used for transactions started by external API requests
+	// to allow us detecting duplicate requests
+	CreateWorkflowRequestModeNew CreateWorkflowRequestMode = iota
+	// Upsert the data without checking duplication
+	// It is used for transactions started by replication stack to achieve
+	// eventual consistency
+	CreateWorkflowRequestModeReplicated
+)
+
 // UnknownNumRowsAffected is returned when the number of rows that an API affected cannot be determined
 const UnknownNumRowsAffected = -1
 
@@ -236,6 +263,7 @@ const (
 	// TransferTaskTransferTargetRunID is the the dummy run ID for transfer tasks of types
 	// that do not have a target workflow
 	TransferTaskTransferTargetRunID = "30000000-0000-f000-f000-000000000002"
+	// Deprecated: This is deprecated as of May 24
 	// CrossClusterTaskDefaultTargetRunID is the the dummy run ID for cross-cluster tasks of types
 	// that do not have a target workflow
 	CrossClusterTaskDefaultTargetRunID = TransferTaskTransferTargetRunID
@@ -256,23 +284,22 @@ const (
 type (
 	// ShardInfo describes a shard
 	ShardInfo struct {
-		ShardID                           int                               `json:"shard_id"`
-		Owner                             string                            `json:"owner"`
-		RangeID                           int64                             `json:"range_id"`
-		StolenSinceRenew                  int                               `json:"stolen_since_renew"`
-		UpdatedAt                         time.Time                         `json:"updated_at"`
-		ReplicationAckLevel               int64                             `json:"replication_ack_level"`
-		ReplicationDLQAckLevel            map[string]int64                  `json:"replication_dlq_ack_level"`
-		TransferAckLevel                  int64                             `json:"transfer_ack_level"`
-		TimerAckLevel                     time.Time                         `json:"timer_ack_level"`
-		ClusterTransferAckLevel           map[string]int64                  `json:"cluster_transfer_ack_level"`
-		ClusterTimerAckLevel              map[string]time.Time              `json:"cluster_timer_ack_level"`
-		TransferProcessingQueueStates     *types.ProcessingQueueStates      `json:"transfer_processing_queue_states"`
-		CrossClusterProcessingQueueStates *types.ProcessingQueueStates      `json:"cross_cluster_queue_states"`
-		TimerProcessingQueueStates        *types.ProcessingQueueStates      `json:"timer_processing_queue_states"`
-		ClusterReplicationLevel           map[string]int64                  `json:"cluster_replication_level"`
-		DomainNotificationVersion         int64                             `json:"domain_notification_version"`
-		PendingFailoverMarkers            []*types.FailoverMarkerAttributes `json:"pending_failover_markers"`
+		ShardID                       int                               `json:"shard_id"`
+		Owner                         string                            `json:"owner"`
+		RangeID                       int64                             `json:"range_id"`
+		StolenSinceRenew              int                               `json:"stolen_since_renew"`
+		UpdatedAt                     time.Time                         `json:"updated_at"`
+		ReplicationAckLevel           int64                             `json:"replication_ack_level"`
+		ReplicationDLQAckLevel        map[string]int64                  `json:"replication_dlq_ack_level"`
+		TransferAckLevel              int64                             `json:"transfer_ack_level"`
+		TimerAckLevel                 time.Time                         `json:"timer_ack_level"`
+		ClusterTransferAckLevel       map[string]int64                  `json:"cluster_transfer_ack_level"`
+		ClusterTimerAckLevel          map[string]time.Time              `json:"cluster_timer_ack_level"`
+		TransferProcessingQueueStates *types.ProcessingQueueStates      `json:"transfer_processing_queue_states"`
+		TimerProcessingQueueStates    *types.ProcessingQueueStates      `json:"timer_processing_queue_states"`
+		ClusterReplicationLevel       map[string]int64                  `json:"cluster_replication_level"`
+		DomainNotificationVersion     int64                             `json:"domain_notification_version"`
+		PendingFailoverMarkers        []*types.FailoverMarkerAttributes `json:"pending_failover_markers"`
 	}
 
 	// WorkflowExecutionInfo describes a workflow execution
@@ -386,6 +413,7 @@ type (
 	// Cross cluster tasks are exactly like transfer tasks so
 	// instead of creating another struct and duplicating the same
 	// logic everywhere. We reuse TransferTaskInfo
+	// This is a deprecated feature as of May 24
 	CrossClusterTaskInfo = TransferTaskInfo
 
 	// ReplicationTaskInfo describes the replication task created for replication of history events
@@ -420,27 +448,35 @@ type (
 
 	// TaskListInfo describes a state of a task list implementation.
 	TaskListInfo struct {
-		DomainID    string
-		Name        string
-		TaskType    int
-		RangeID     int64
-		AckLevel    int64
-		Kind        int
-		Expiry      time.Time
-		LastUpdated time.Time
+		DomainID                string
+		Name                    string
+		TaskType                int
+		RangeID                 int64
+		AckLevel                int64
+		Kind                    int
+		Expiry                  time.Time
+		LastUpdated             time.Time
+		AdaptivePartitionConfig *TaskListPartitionConfig
+	}
+
+	// TaskListPartitionConfig represents the configuration for task list partitions.
+	TaskListPartitionConfig struct {
+		Version            int64
+		NumReadPartitions  int
+		NumWritePartitions int
 	}
 
 	// TaskInfo describes either activity or decision task
 	TaskInfo struct {
-		DomainID               string
-		WorkflowID             string
-		RunID                  string
-		TaskID                 int64
-		ScheduleID             int64
-		ScheduleToStartTimeout int32
-		Expiry                 time.Time
-		CreatedTime            time.Time
-		PartitionConfig        map[string]string
+		DomainID                      string
+		WorkflowID                    string
+		RunID                         string
+		TaskID                        int64
+		ScheduleID                    int64
+		ScheduleToStartTimeoutSeconds int32
+		Expiry                        time.Time
+		CreatedTime                   time.Time
+		PartitionConfig               map[string]string
 	}
 
 	// TaskKey gives primary key info for a specific task
@@ -449,249 +485,6 @@ type (
 		TaskListName string
 		TaskType     int
 		TaskID       int64
-	}
-
-	// Task is the generic interface for workflow tasks
-	Task interface {
-		GetType() int
-		GetVersion() int64
-		SetVersion(version int64)
-		GetTaskID() int64
-		SetTaskID(id int64)
-		GetVisibilityTimestamp() time.Time
-		SetVisibilityTimestamp(timestamp time.Time)
-	}
-
-	// ActivityTask identifies a transfer task for activity
-	ActivityTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		DomainID            string
-		TaskList            string
-		ScheduleID          int64
-		Version             int64
-	}
-
-	// DecisionTask identifies a transfer task for decision
-	DecisionTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		DomainID            string
-		TaskList            string
-		ScheduleID          int64
-		Version             int64
-		RecordVisibility    bool
-	}
-
-	// RecordWorkflowStartedTask identifites a transfer task for writing visibility open execution record
-	RecordWorkflowStartedTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-	}
-
-	// ResetWorkflowTask identifites a transfer task to reset workflow
-	ResetWorkflowTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-	}
-
-	// CloseExecutionTask identifies a transfer task for deletion of execution
-	CloseExecutionTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-	}
-
-	// DeleteHistoryEventTask identifies a timer task for deletion of history events of completed execution.
-	DeleteHistoryEventTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-	}
-
-	// DecisionTimeoutTask identifies a timeout task.
-	DecisionTimeoutTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		EventID             int64
-		ScheduleAttempt     int64
-		TimeoutType         int
-		Version             int64
-	}
-
-	// WorkflowTimeoutTask identifies a timeout task.
-	WorkflowTimeoutTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-	}
-
-	// CancelExecutionTask identifies a transfer task for cancel of execution
-	CancelExecutionTask struct {
-		VisibilityTimestamp     time.Time
-		TaskID                  int64
-		TargetDomainID          string
-		TargetWorkflowID        string
-		TargetRunID             string
-		TargetChildWorkflowOnly bool
-		InitiatedID             int64
-		Version                 int64
-	}
-
-	// SignalExecutionTask identifies a transfer task for signal execution
-	SignalExecutionTask struct {
-		VisibilityTimestamp     time.Time
-		TaskID                  int64
-		TargetDomainID          string
-		TargetWorkflowID        string
-		TargetRunID             string
-		TargetChildWorkflowOnly bool
-		InitiatedID             int64
-		Version                 int64
-	}
-
-	// UpsertWorkflowSearchAttributesTask identifies a transfer task for upsert search attributes
-	UpsertWorkflowSearchAttributesTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		// this version is not used by task processing for validation,
-		// instead, the version is used by elastic search
-		Version int64
-	}
-
-	// StartChildExecutionTask identifies a transfer task for starting child execution
-	StartChildExecutionTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		TargetDomainID      string
-		TargetWorkflowID    string
-		InitiatedID         int64
-		Version             int64
-	}
-
-	// RecordWorkflowClosedTask identifies a transfer task for writing visibility close execution record
-	RecordWorkflowClosedTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-	}
-
-	// RecordChildExecutionCompletedTask identifies a task for recording the competion of a child workflow
-	RecordChildExecutionCompletedTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		TargetDomainID      string
-		TargetWorkflowID    string
-		TargetRunID         string
-		Version             int64
-	}
-
-	// ApplyParentClosePolicyTask identifies a task for applying parent close policy
-	ApplyParentClosePolicyTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		TargetDomainIDs     map[string]struct{}
-		Version             int64
-	}
-
-	// CrossClusterStartChildExecutionTask is the cross-cluster version of StartChildExecutionTask
-	CrossClusterStartChildExecutionTask struct {
-		StartChildExecutionTask
-
-		TargetCluster string
-	}
-
-	// CrossClusterCancelExecutionTask is the cross-cluster version of CancelExecutionTask
-	CrossClusterCancelExecutionTask struct {
-		CancelExecutionTask
-
-		TargetCluster string
-	}
-
-	// CrossClusterSignalExecutionTask is the cross-cluster version of SignalExecutionTask
-	CrossClusterSignalExecutionTask struct {
-		SignalExecutionTask
-
-		TargetCluster string
-	}
-
-	// CrossClusterRecordChildExecutionCompletedTask is the cross-cluster version of RecordChildExecutionCompletedTask
-	CrossClusterRecordChildExecutionCompletedTask struct {
-		RecordChildExecutionCompletedTask
-
-		TargetCluster string
-	}
-
-	// CrossClusterApplyParentClosePolicyTask is the cross-cluster version of ApplyParentClosePolicyTask
-	CrossClusterApplyParentClosePolicyTask struct {
-		ApplyParentClosePolicyTask
-
-		TargetCluster string
-	}
-
-	// ActivityTimeoutTask identifies a timeout task.
-	ActivityTimeoutTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		TimeoutType         int
-		EventID             int64
-		Attempt             int64
-		Version             int64
-	}
-
-	// UserTimerTask identifies a timeout task.
-	UserTimerTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		EventID             int64
-		Version             int64
-	}
-
-	// ActivityRetryTimerTask to schedule a retry task for activity
-	ActivityRetryTimerTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		EventID             int64
-		Version             int64
-		Attempt             int32
-	}
-
-	// WorkflowBackoffTimerTask to schedule first decision task for retried workflow
-	WorkflowBackoffTimerTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		EventID             int64 // TODO this attribute is not used?
-		Version             int64
-		TimeoutType         int // 0 for retry, 1 for cron.
-	}
-
-	// HistoryReplicationTask is the replication task created for shipping history replication events to other clusters
-	HistoryReplicationTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		FirstEventID        int64
-		NextEventID         int64
-		Version             int64
-		BranchToken         []byte
-		NewRunBranchToken   []byte
-	}
-
-	// SyncActivityTask is the replication task created for shipping activity info to other clusters
-	SyncActivityTask struct {
-		VisibilityTimestamp time.Time
-		TaskID              int64
-		Version             int64
-		ScheduledID         int64
-	}
-
-	// FailoverMarkerTask is the marker for graceful failover
-	FailoverMarkerTask struct {
-		TaskID              int64
-		VisibilityTimestamp time.Time
-		Version             int64
-		DomainID            string
 	}
 
 	// ReplicationInfo represents the information stored for last replication event details per cluster
@@ -851,7 +644,8 @@ type (
 
 		NewWorkflowSnapshot WorkflowSnapshot
 
-		DomainName string
+		WorkflowRequestMode CreateWorkflowRequestMode
+		DomainName          string
 	}
 
 	// CreateWorkflowExecutionResponse is the response to CreateWorkflowExecutionRequest
@@ -864,6 +658,7 @@ type (
 		DomainID   string
 		Execution  types.WorkflowExecution
 		DomainName string
+		RangeID    int64
 	}
 
 	// GetWorkflowExecutionResponse is the response to GetworkflowExecutionRequest
@@ -941,6 +736,8 @@ type (
 
 		NewWorkflowSnapshot *WorkflowSnapshot
 
+		WorkflowRequestMode CreateWorkflowRequestMode
+
 		Encoding common.EncodingType // optional binary encoding type
 
 		DomainName string
@@ -961,6 +758,8 @@ type (
 		// current workflow
 		CurrentWorkflowMutation *WorkflowMutation
 
+		WorkflowRequestMode CreateWorkflowRequestMode
+
 		Encoding common.EncodingType // optional binary encoding type
 
 		DomainName string
@@ -973,6 +772,13 @@ type (
 		RunID       string
 		BranchToken []byte
 		Events      []*types.HistoryEvent
+	}
+
+	// WorkflowRequest is used as requestID and it's corresponding failover version container
+	WorkflowRequest struct {
+		RequestID   string
+		Version     int64
+		RequestType WorkflowRequestType
 	}
 
 	// WorkflowMutation is used as generic workflow execution state mutation
@@ -1001,6 +807,8 @@ type (
 		ReplicationTasks  []Task
 		TimerTasks        []Task
 
+		WorkflowRequests []*WorkflowRequest
+
 		Condition int64
 		Checksum  checksum.Checksum
 	}
@@ -1022,6 +830,8 @@ type (
 		CrossClusterTasks []Task
 		ReplicationTasks  []Task
 		TimerTasks        []Task
+
+		WorkflowRequests []*WorkflowRequest
 
 		Condition int64
 		Checksum  checksum.Checksum
@@ -1162,7 +972,7 @@ type (
 		TaskID            int64
 	}
 
-	//RangeDeleteReplicationTaskFromDLQRequest is used to delete replication tasks from DLQ
+	// RangeDeleteReplicationTaskFromDLQRequest is used to delete replication tasks from DLQ
 	RangeDeleteReplicationTaskFromDLQRequest struct {
 		SourceClusterName    string
 		ExclusiveBeginTaskID int64
@@ -1170,7 +980,7 @@ type (
 		PageSize             int
 	}
 
-	//RangeDeleteReplicationTaskFromDLQResponse is the response of RangeDeleteReplicationTaskFromDLQ
+	// RangeDeleteReplicationTaskFromDLQResponse is the response of RangeDeleteReplicationTaskFromDLQ
 	RangeDeleteReplicationTaskFromDLQResponse struct {
 		TasksCompleted int
 	}
@@ -1213,6 +1023,17 @@ type (
 
 	// LeaseTaskListResponse is response to LeaseTaskListRequest
 	LeaseTaskListResponse struct {
+		TaskListInfo *TaskListInfo
+	}
+
+	GetTaskListRequest struct {
+		DomainID   string
+		DomainName string
+		TaskList   string
+		TaskType   int
+	}
+
+	GetTaskListResponse struct {
 		TaskListInfo *TaskListInfo
 	}
 
@@ -1268,9 +1089,8 @@ type (
 
 	// CreateTaskInfo describes a task to be created in CreateTasksRequest
 	CreateTaskInfo struct {
-		Execution types.WorkflowExecution
-		Data      *TaskInfo
-		TaskID    int64
+		Data   *TaskInfo
+		TaskID int64
 	}
 
 	// CreateTasksResponse is the response to CreateTasksRequest
@@ -1535,7 +1355,7 @@ type (
 		// The shard to get history node data
 		ShardID *int
 
-		//DomainName to get metrics created with the domain
+		// DomainName to get metrics created with the domain
 		DomainName string
 	}
 
@@ -1616,7 +1436,7 @@ type (
 		Info string
 		// The shard to get history branch data
 		ShardID *int
-		//DomainName to create metrics for Domain Cost Attribution
+		// DomainName to create metrics for Domain Cost Attribution
 		DomainName string
 	}
 
@@ -1642,7 +1462,7 @@ type (
 		BranchToken []byte
 		// The shard to delete history branch data
 		ShardID *int
-		//DomainName to generate metrics for Domain Cost Attribution
+		// DomainName to generate metrics for Domain Cost Attribution
 		DomainName string
 	}
 
@@ -1654,7 +1474,7 @@ type (
 		ShardID *int
 		// optional: can provide treeID via branchToken if treeID is empty
 		BranchToken []byte
-		//DomainName to create metrics
+		// DomainName to create metrics
 		DomainName string
 	}
 
@@ -1743,11 +1563,6 @@ type (
 		CompleteTransferTask(ctx context.Context, request *CompleteTransferTaskRequest) error
 		RangeCompleteTransferTask(ctx context.Context, request *RangeCompleteTransferTaskRequest) (*RangeCompleteTransferTaskResponse, error)
 
-		// Cross-cluster related methods
-		GetCrossClusterTasks(ctx context.Context, request *GetCrossClusterTasksRequest) (*GetCrossClusterTasksResponse, error)
-		CompleteCrossClusterTask(ctx context.Context, request *CompleteCrossClusterTaskRequest) error
-		RangeCompleteCrossClusterTask(ctx context.Context, request *RangeCompleteCrossClusterTaskRequest) (*RangeCompleteCrossClusterTaskResponse, error)
-
 		// Replication task related methods
 		GetReplicationTasks(ctx context.Context, request *GetReplicationTasksRequest) (*GetReplicationTasksResponse, error)
 		CompleteReplicationTask(ctx context.Context, request *CompleteReplicationTaskRequest) error
@@ -1781,6 +1596,7 @@ type (
 		GetName() string
 		LeaseTaskList(ctx context.Context, request *LeaseTaskListRequest) (*LeaseTaskListResponse, error)
 		UpdateTaskList(ctx context.Context, request *UpdateTaskListRequest) (*UpdateTaskListResponse, error)
+		GetTaskList(ctx context.Context, request *GetTaskListRequest) (*GetTaskListResponse, error)
 		ListTaskList(ctx context.Context, request *ListTaskListRequest) (*ListTaskListResponse, error)
 		DeleteTaskList(ctx context.Context, request *DeleteTaskListRequest) error
 		GetTaskListSize(ctx context.Context, request *GetTaskListSizeRequest) (*GetTaskListSizeResponse, error)
@@ -1863,7 +1679,7 @@ type (
 		Closeable
 		FetchDynamicConfig(ctx context.Context, cfgType ConfigType) (*FetchDynamicConfigResponse, error)
 		UpdateDynamicConfig(ctx context.Context, request *UpdateDynamicConfigRequest, cfgType ConfigType) error
-		//can add functions for config types other than dynamic config
+		// can add functions for config types other than dynamic config
 	}
 )
 
@@ -1871,801 +1687,6 @@ type (
 func IsTimeoutError(err error) bool {
 	_, ok := err.(*TimeoutError)
 	return ok
-}
-
-// GetType returns the type of the activity task
-func (a *ActivityTask) GetType() int {
-	return TransferTaskTypeActivityTask
-}
-
-// GetVersion returns the version of the activity task
-func (a *ActivityTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the activity task
-func (a *ActivityTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the activity task
-func (a *ActivityTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the activity task
-func (a *ActivityTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *ActivityTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *ActivityTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the decision task
-func (d *DecisionTask) GetType() int {
-	return TransferTaskTypeDecisionTask
-}
-
-// GetVersion returns the version of the decision task
-func (d *DecisionTask) GetVersion() int64 {
-	return d.Version
-}
-
-// SetVersion returns the version of the decision task
-func (d *DecisionTask) SetVersion(version int64) {
-	d.Version = version
-}
-
-// GetTaskID returns the sequence ID of the decision task.
-func (d *DecisionTask) GetTaskID() int64 {
-	return d.TaskID
-}
-
-// SetTaskID sets the sequence ID of the decision task
-func (d *DecisionTask) SetTaskID(id int64) {
-	d.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (d *DecisionTask) GetVisibilityTimestamp() time.Time {
-	return d.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (d *DecisionTask) SetVisibilityTimestamp(timestamp time.Time) {
-	d.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the record workflow started task
-func (a *RecordWorkflowStartedTask) GetType() int {
-	return TransferTaskTypeRecordWorkflowStarted
-}
-
-// GetVersion returns the version of the record workflow started task
-func (a *RecordWorkflowStartedTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the record workflow started task
-func (a *RecordWorkflowStartedTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the record workflow started task
-func (a *RecordWorkflowStartedTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the record workflow started task
-func (a *RecordWorkflowStartedTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *RecordWorkflowStartedTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *RecordWorkflowStartedTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the ResetWorkflowTask
-func (a *ResetWorkflowTask) GetType() int {
-	return TransferTaskTypeResetWorkflow
-}
-
-// GetVersion returns the version of the ResetWorkflowTask
-func (a *ResetWorkflowTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the ResetWorkflowTask
-func (a *ResetWorkflowTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the ResetWorkflowTask
-func (a *ResetWorkflowTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the ResetWorkflowTask
-func (a *ResetWorkflowTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *ResetWorkflowTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *ResetWorkflowTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the close execution task
-func (a *CloseExecutionTask) GetType() int {
-	return TransferTaskTypeCloseExecution
-}
-
-// GetVersion returns the version of the close execution task
-func (a *CloseExecutionTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the close execution task
-func (a *CloseExecutionTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the close execution task
-func (a *CloseExecutionTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the close execution task
-func (a *CloseExecutionTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *CloseExecutionTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *CloseExecutionTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the delete execution task
-func (a *DeleteHistoryEventTask) GetType() int {
-	return TaskTypeDeleteHistoryEvent
-}
-
-// GetVersion returns the version of the delete execution task
-func (a *DeleteHistoryEventTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the delete execution task
-func (a *DeleteHistoryEventTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the delete execution task
-func (a *DeleteHistoryEventTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the delete execution task
-func (a *DeleteHistoryEventTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *DeleteHistoryEventTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *DeleteHistoryEventTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the timer task
-func (d *DecisionTimeoutTask) GetType() int {
-	return TaskTypeDecisionTimeout
-}
-
-// GetVersion returns the version of the timer task
-func (d *DecisionTimeoutTask) GetVersion() int64 {
-	return d.Version
-}
-
-// SetVersion returns the version of the timer task
-func (d *DecisionTimeoutTask) SetVersion(version int64) {
-	d.Version = version
-}
-
-// GetTaskID returns the sequence ID.
-func (d *DecisionTimeoutTask) GetTaskID() int64 {
-	return d.TaskID
-}
-
-// SetTaskID sets the sequence ID.
-func (d *DecisionTimeoutTask) SetTaskID(id int64) {
-	d.TaskID = id
-}
-
-// GetVisibilityTimestamp gets the visibility time stamp
-func (d *DecisionTimeoutTask) GetVisibilityTimestamp() time.Time {
-	return d.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp gets the visibility time stamp
-func (d *DecisionTimeoutTask) SetVisibilityTimestamp(t time.Time) {
-	d.VisibilityTimestamp = t
-}
-
-// GetType returns the type of the timer task
-func (a *ActivityTimeoutTask) GetType() int {
-	return TaskTypeActivityTimeout
-}
-
-// GetVersion returns the version of the timer task
-func (a *ActivityTimeoutTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the timer task
-func (a *ActivityTimeoutTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID.
-func (a *ActivityTimeoutTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID.
-func (a *ActivityTimeoutTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp gets the visibility time stamp
-func (a *ActivityTimeoutTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp gets the visibility time stamp
-func (a *ActivityTimeoutTask) SetVisibilityTimestamp(t time.Time) {
-	a.VisibilityTimestamp = t
-}
-
-// GetType returns the type of the timer task
-func (u *UserTimerTask) GetType() int {
-	return TaskTypeUserTimer
-}
-
-// GetVersion returns the version of the timer task
-func (u *UserTimerTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the timer task
-func (u *UserTimerTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the timer task.
-func (u *UserTimerTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the timer task.
-func (u *UserTimerTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp gets the visibility time stamp
-func (u *UserTimerTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp gets the visibility time stamp
-func (u *UserTimerTask) SetVisibilityTimestamp(t time.Time) {
-	u.VisibilityTimestamp = t
-}
-
-// GetType returns the type of the retry timer task
-func (r *ActivityRetryTimerTask) GetType() int {
-	return TaskTypeActivityRetryTimer
-}
-
-// GetVersion returns the version of the retry timer task
-func (r *ActivityRetryTimerTask) GetVersion() int64 {
-	return r.Version
-}
-
-// SetVersion returns the version of the retry timer task
-func (r *ActivityRetryTimerTask) SetVersion(version int64) {
-	r.Version = version
-}
-
-// GetTaskID returns the sequence ID.
-func (r *ActivityRetryTimerTask) GetTaskID() int64 {
-	return r.TaskID
-}
-
-// SetTaskID sets the sequence ID.
-func (r *ActivityRetryTimerTask) SetTaskID(id int64) {
-	r.TaskID = id
-}
-
-// GetVisibilityTimestamp gets the visibility time stamp
-func (r *ActivityRetryTimerTask) GetVisibilityTimestamp() time.Time {
-	return r.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp gets the visibility time stamp
-func (r *ActivityRetryTimerTask) SetVisibilityTimestamp(t time.Time) {
-	r.VisibilityTimestamp = t
-}
-
-// GetType returns the type of the retry timer task
-func (r *WorkflowBackoffTimerTask) GetType() int {
-	return TaskTypeWorkflowBackoffTimer
-}
-
-// GetVersion returns the version of the retry timer task
-func (r *WorkflowBackoffTimerTask) GetVersion() int64 {
-	return r.Version
-}
-
-// SetVersion returns the version of the retry timer task
-func (r *WorkflowBackoffTimerTask) SetVersion(version int64) {
-	r.Version = version
-}
-
-// GetTaskID returns the sequence ID.
-func (r *WorkflowBackoffTimerTask) GetTaskID() int64 {
-	return r.TaskID
-}
-
-// SetTaskID sets the sequence ID.
-func (r *WorkflowBackoffTimerTask) SetTaskID(id int64) {
-	r.TaskID = id
-}
-
-// GetVisibilityTimestamp gets the visibility time stamp
-func (r *WorkflowBackoffTimerTask) GetVisibilityTimestamp() time.Time {
-	return r.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp gets the visibility time stamp
-func (r *WorkflowBackoffTimerTask) SetVisibilityTimestamp(t time.Time) {
-	r.VisibilityTimestamp = t
-}
-
-// GetType returns the type of the timeout task.
-func (u *WorkflowTimeoutTask) GetType() int {
-	return TaskTypeWorkflowTimeout
-}
-
-// GetVersion returns the version of the timeout task
-func (u *WorkflowTimeoutTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the timeout task
-func (u *WorkflowTimeoutTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the cancel transfer task.
-func (u *WorkflowTimeoutTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the cancel transfer task.
-func (u *WorkflowTimeoutTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp gets the visibility time stamp
-func (u *WorkflowTimeoutTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp gets the visibility time stamp
-func (u *WorkflowTimeoutTask) SetVisibilityTimestamp(t time.Time) {
-	u.VisibilityTimestamp = t
-}
-
-// GetType returns the type of the cancel transfer task
-func (u *CancelExecutionTask) GetType() int {
-	return TransferTaskTypeCancelExecution
-}
-
-// GetVersion returns the version of the cancel transfer task
-func (u *CancelExecutionTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the cancel transfer task
-func (u *CancelExecutionTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the cancel transfer task.
-func (u *CancelExecutionTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the cancel transfer task.
-func (u *CancelExecutionTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *CancelExecutionTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *CancelExecutionTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the signal transfer task
-func (u *SignalExecutionTask) GetType() int {
-	return TransferTaskTypeSignalExecution
-}
-
-// GetVersion returns the version of the signal transfer task
-func (u *SignalExecutionTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the signal transfer task
-func (u *SignalExecutionTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the signal transfer task.
-func (u *SignalExecutionTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the signal transfer task.
-func (u *SignalExecutionTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *SignalExecutionTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *SignalExecutionTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the record child execution completed task
-func (u *RecordChildExecutionCompletedTask) GetType() int {
-	return TransferTaskTypeRecordChildExecutionCompleted
-}
-
-// GetVersion returns the version of the signal transfer task
-func (u *RecordChildExecutionCompletedTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the signal transfer task
-func (u *RecordChildExecutionCompletedTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the signal transfer task.
-func (u *RecordChildExecutionCompletedTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the signal transfer task.
-func (u *RecordChildExecutionCompletedTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *RecordChildExecutionCompletedTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *RecordChildExecutionCompletedTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the apply parent close policy task
-func (u *ApplyParentClosePolicyTask) GetType() int {
-	return TransferTaskTypeApplyParentClosePolicy
-}
-
-// GetVersion returns the version of the cancel transfer task
-func (u *ApplyParentClosePolicyTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the cancel transfer task
-func (u *ApplyParentClosePolicyTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the cancel transfer task.
-func (u *ApplyParentClosePolicyTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the cancel transfer task.
-func (u *ApplyParentClosePolicyTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *ApplyParentClosePolicyTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *ApplyParentClosePolicyTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the upsert search attributes transfer task
-func (u *UpsertWorkflowSearchAttributesTask) GetType() int {
-	return TransferTaskTypeUpsertWorkflowSearchAttributes
-}
-
-// GetVersion returns the version of the upsert search attributes transfer task
-func (u *UpsertWorkflowSearchAttributesTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the upsert search attributes transfer task
-func (u *UpsertWorkflowSearchAttributesTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the signal transfer task.
-func (u *UpsertWorkflowSearchAttributesTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the signal transfer task.
-func (u *UpsertWorkflowSearchAttributesTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *UpsertWorkflowSearchAttributesTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *UpsertWorkflowSearchAttributesTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the start child transfer task
-func (u *StartChildExecutionTask) GetType() int {
-	return TransferTaskTypeStartChildExecution
-}
-
-// GetVersion returns the version of the start child transfer task
-func (u *StartChildExecutionTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the start child transfer task
-func (u *StartChildExecutionTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the start child transfer task
-func (u *StartChildExecutionTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the start child transfer task
-func (u *StartChildExecutionTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *StartChildExecutionTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *StartChildExecutionTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the record workflow closed task
-func (u *RecordWorkflowClosedTask) GetType() int {
-	return TransferTaskTypeRecordWorkflowClosed
-}
-
-// GetVersion returns the version of the record workflow closed task
-func (u *RecordWorkflowClosedTask) GetVersion() int64 {
-	return u.Version
-}
-
-// SetVersion returns the version of the record workflow closed task
-func (u *RecordWorkflowClosedTask) SetVersion(version int64) {
-	u.Version = version
-}
-
-// GetTaskID returns the sequence ID of the record workflow closed task
-func (u *RecordWorkflowClosedTask) GetTaskID() int64 {
-	return u.TaskID
-}
-
-// SetTaskID sets the sequence ID of the record workflow closed task
-func (u *RecordWorkflowClosedTask) SetTaskID(id int64) {
-	u.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (u *RecordWorkflowClosedTask) GetVisibilityTimestamp() time.Time {
-	return u.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (u *RecordWorkflowClosedTask) SetVisibilityTimestamp(timestamp time.Time) {
-	u.VisibilityTimestamp = timestamp
-}
-
-// GetType returns of type of the cross-cluster start child task
-func (c *CrossClusterStartChildExecutionTask) GetType() int {
-	return CrossClusterTaskTypeStartChildExecution
-}
-
-// GetType returns of type of the cross-cluster cancel task
-func (c *CrossClusterCancelExecutionTask) GetType() int {
-	return CrossClusterTaskTypeCancelExecution
-}
-
-// GetType returns of type of the cross-cluster signal task
-func (c *CrossClusterSignalExecutionTask) GetType() int {
-	return CrossClusterTaskTypeSignalExecution
-}
-
-// GetType returns of type of the cross-cluster record child workflow completion task
-func (c *CrossClusterRecordChildExecutionCompletedTask) GetType() int {
-	return CrossClusterTaskTypeRecordChildExeuctionCompleted
-}
-
-// GetType returns of type of the cross-cluster cancel task
-func (c *CrossClusterApplyParentClosePolicyTask) GetType() int {
-	return CrossClusterTaskTypeApplyParentClosePolicy
-}
-
-// GetType returns the type of the history replication task
-func (a *HistoryReplicationTask) GetType() int {
-	return ReplicationTaskTypeHistory
-}
-
-// GetVersion returns the version of the history replication task
-func (a *HistoryReplicationTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the history replication task
-func (a *HistoryReplicationTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the history replication task
-func (a *HistoryReplicationTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the history replication task
-func (a *HistoryReplicationTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *HistoryReplicationTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *HistoryReplicationTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the history replication task
-func (a *SyncActivityTask) GetType() int {
-	return ReplicationTaskTypeSyncActivity
-}
-
-// GetVersion returns the version of the history replication task
-func (a *SyncActivityTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the history replication task
-func (a *SyncActivityTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the history replication task
-func (a *SyncActivityTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the history replication task
-func (a *SyncActivityTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *SyncActivityTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *SyncActivityTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
-}
-
-// GetType returns the type of the history replication task
-func (a *FailoverMarkerTask) GetType() int {
-	return ReplicationTaskTypeFailoverMarker
-}
-
-// GetVersion returns the version of the history replication task
-func (a *FailoverMarkerTask) GetVersion() int64 {
-	return a.Version
-}
-
-// SetVersion returns the version of the history replication task
-func (a *FailoverMarkerTask) SetVersion(version int64) {
-	a.Version = version
-}
-
-// GetTaskID returns the sequence ID of the history replication task
-func (a *FailoverMarkerTask) GetTaskID() int64 {
-	return a.TaskID
-}
-
-// SetTaskID sets the sequence ID of the history replication task
-func (a *FailoverMarkerTask) SetTaskID(id int64) {
-	a.TaskID = id
-}
-
-// GetVisibilityTimestamp get the visibility timestamp
-func (a *FailoverMarkerTask) GetVisibilityTimestamp() time.Time {
-	return a.VisibilityTimestamp
-}
-
-// SetVisibilityTimestamp set the visibility timestamp
-func (a *FailoverMarkerTask) SetVisibilityTimestamp(timestamp time.Time) {
-	a.VisibilityTimestamp = timestamp
 }
 
 // GetTaskID returns the task ID for transfer task
@@ -2811,23 +1832,22 @@ func (s *ShardInfo) Copy() *ShardInfo {
 		replicationDLQAckLevel[k] = v
 	}
 	return &ShardInfo{
-		ShardID:                           s.ShardID,
-		Owner:                             s.Owner,
-		RangeID:                           s.RangeID,
-		StolenSinceRenew:                  s.StolenSinceRenew,
-		ReplicationAckLevel:               s.ReplicationAckLevel,
-		TransferAckLevel:                  s.TransferAckLevel,
-		TimerAckLevel:                     s.TimerAckLevel,
-		ClusterTransferAckLevel:           clusterTransferAckLevel,
-		ClusterTimerAckLevel:              clusterTimerAckLevel,
-		TransferProcessingQueueStates:     s.TransferProcessingQueueStates,
-		CrossClusterProcessingQueueStates: s.CrossClusterProcessingQueueStates,
-		TimerProcessingQueueStates:        s.TimerProcessingQueueStates,
-		DomainNotificationVersion:         s.DomainNotificationVersion,
-		ClusterReplicationLevel:           clusterReplicationLevel,
-		ReplicationDLQAckLevel:            replicationDLQAckLevel,
-		PendingFailoverMarkers:            s.PendingFailoverMarkers,
-		UpdatedAt:                         s.UpdatedAt,
+		ShardID:                       s.ShardID,
+		Owner:                         s.Owner,
+		RangeID:                       s.RangeID,
+		StolenSinceRenew:              s.StolenSinceRenew,
+		ReplicationAckLevel:           s.ReplicationAckLevel,
+		TransferAckLevel:              s.TransferAckLevel,
+		TimerAckLevel:                 s.TimerAckLevel,
+		ClusterTransferAckLevel:       clusterTransferAckLevel,
+		ClusterTimerAckLevel:          clusterTimerAckLevel,
+		TransferProcessingQueueStates: s.TransferProcessingQueueStates,
+		TimerProcessingQueueStates:    s.TimerProcessingQueueStates,
+		DomainNotificationVersion:     s.DomainNotificationVersion,
+		ClusterReplicationLevel:       clusterReplicationLevel,
+		ReplicationDLQAckLevel:        replicationDLQAckLevel,
+		PendingFailoverMarkers:        s.PendingFailoverMarkers,
+		UpdatedAt:                     s.UpdatedAt,
 	}
 }
 
@@ -2996,4 +2016,52 @@ func HasMoreRowsToDelete(rowsDeleted, batchSize int) bool {
 		return false
 	}
 	return true
+}
+
+func (e *WorkflowExecutionInfo) CopyMemo() map[string][]byte {
+	if e.Memo == nil {
+		return nil
+	}
+	memo := make(map[string][]byte)
+	for k, v := range e.Memo {
+		val := make([]byte, len(v))
+		copy(val, v)
+		memo[k] = val
+	}
+	return memo
+}
+
+func (e *WorkflowExecutionInfo) CopySearchAttributes() map[string][]byte {
+	if e.SearchAttributes == nil {
+		return nil
+	}
+	searchAttr := make(map[string][]byte)
+	for k, v := range e.SearchAttributes {
+		val := make([]byte, len(v))
+		copy(val, v)
+		searchAttr[k] = val
+	}
+	return searchAttr
+}
+
+func (e *WorkflowExecutionInfo) CopyPartitionConfig() map[string]string {
+	if e.PartitionConfig == nil {
+		return nil
+	}
+	partitionConfig := make(map[string]string)
+	for k, v := range e.PartitionConfig {
+		partitionConfig[k] = v
+	}
+	return partitionConfig
+}
+
+func (p *TaskListPartitionConfig) ToInternalType() *types.TaskListPartitionConfig {
+	if p == nil {
+		return nil
+	}
+	return &types.TaskListPartitionConfig{
+		Version:            p.Version,
+		NumReadPartitions:  int32(p.NumReadPartitions),
+		NumWritePartitions: int32(p.NumWritePartitions),
+	}
 }

@@ -99,6 +99,7 @@ func TestCancelExternalWorkflowExecutionFailedCause(t *testing.T) {
 	for _, item := range []*types.CancelExternalWorkflowExecutionFailedCause{
 		nil,
 		types.CancelExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution.Ptr(),
+		types.CancelExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted.Ptr(),
 	} {
 		assert.Equal(t, item, ToCancelExternalWorkflowExecutionFailedCause(FromCancelExternalWorkflowExecutionFailedCause(item)))
 	}
@@ -132,6 +133,21 @@ func TestContinueAsNewInitiator(t *testing.T) {
 	}
 	assert.Panics(t, func() { ToContinueAsNewInitiator(apiv1.ContinueAsNewInitiator(UnknownValue)) })
 	assert.Panics(t, func() { FromContinueAsNewInitiator(types.ContinueAsNewInitiator(UnknownValue).Ptr()) })
+}
+func TestCrossClusterTaskFailedCause(t *testing.T) {
+	for _, item := range []*types.CrossClusterTaskFailedCause{
+		nil,
+		types.CrossClusterTaskFailedCauseDomainNotActive.Ptr(),
+		types.CrossClusterTaskFailedCauseDomainNotExists.Ptr(),
+		types.CrossClusterTaskFailedCauseWorkflowAlreadyRunning.Ptr(),
+		types.CrossClusterTaskFailedCauseWorkflowNotExists.Ptr(),
+		types.CrossClusterTaskFailedCauseWorkflowAlreadyCompleted.Ptr(),
+		types.CrossClusterTaskFailedCauseUncategorized.Ptr(),
+	} {
+		assert.Equal(t, item, ToCrossClusterTaskFailedCause(FromCrossClusterTaskFailedCause(item)))
+	}
+	assert.Panics(t, func() { ToCrossClusterTaskFailedCause(adminv1.CrossClusterTaskFailedCause(UnknownValue)) })
+	assert.Panics(t, func() { FromCrossClusterTaskFailedCause(types.CrossClusterTaskFailedCause(UnknownValue).Ptr()) })
 }
 func TestDecisionTaskFailedCause(t *testing.T) {
 	for _, item := range []*types.DecisionTaskFailedCause{
@@ -297,6 +313,7 @@ func TestSignalExternalWorkflowExecutionFailedCause(t *testing.T) {
 	for _, item := range []*types.SignalExternalWorkflowExecutionFailedCause{
 		nil,
 		types.SignalExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution.Ptr(),
+		types.SignalExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted.Ptr(),
 	} {
 		assert.Equal(t, item, ToSignalExternalWorkflowExecutionFailedCause(FromSignalExternalWorkflowExecutionFailedCause(item)))
 	}

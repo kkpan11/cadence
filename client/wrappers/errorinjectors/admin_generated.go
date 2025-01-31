@@ -242,26 +242,6 @@ func (c *adminClient) DescribeWorkflowExecution(ctx context.Context, ap1 *types.
 	return
 }
 
-func (c *adminClient) GetCrossClusterTasks(ctx context.Context, gp1 *types.GetCrossClusterTasksRequest, p1 ...yarpc.CallOption) (gp2 *types.GetCrossClusterTasksResponse, err error) {
-	fakeErr := c.fakeErrFn(c.errorRate)
-	var forwardCall bool
-	if forwardCall = c.forwardCallFn(fakeErr); forwardCall {
-		gp2, err = c.client.GetCrossClusterTasks(ctx, gp1, p1...)
-	}
-
-	if fakeErr != nil {
-		c.logger.Error(msgAdminInjectedFakeErr,
-			tag.AdminClientOperationGetCrossClusterTasks,
-			tag.Error(fakeErr),
-			tag.Bool(forwardCall),
-			tag.ClientError(err),
-		)
-		err = fakeErr
-		return
-	}
-	return
-}
-
 func (c *adminClient) GetDLQReplicationMessages(ctx context.Context, gp1 *types.GetDLQReplicationMessagesRequest, p1 ...yarpc.CallOption) (gp2 *types.GetDLQReplicationMessagesResponse, err error) {
 	fakeErr := c.fakeErrFn(c.errorRate)
 	var forwardCall bool
@@ -622,26 +602,6 @@ func (c *adminClient) ResetQueue(ctx context.Context, rp1 *types.ResetQueueReque
 	return
 }
 
-func (c *adminClient) RespondCrossClusterTasksCompleted(ctx context.Context, rp1 *types.RespondCrossClusterTasksCompletedRequest, p1 ...yarpc.CallOption) (rp2 *types.RespondCrossClusterTasksCompletedResponse, err error) {
-	fakeErr := c.fakeErrFn(c.errorRate)
-	var forwardCall bool
-	if forwardCall = c.forwardCallFn(fakeErr); forwardCall {
-		rp2, err = c.client.RespondCrossClusterTasksCompleted(ctx, rp1, p1...)
-	}
-
-	if fakeErr != nil {
-		c.logger.Error(msgAdminInjectedFakeErr,
-			tag.AdminClientOperationRespondCrossClusterTasksCompleted,
-			tag.Error(fakeErr),
-			tag.Bool(forwardCall),
-			tag.ClientError(err),
-		)
-		err = fakeErr
-		return
-	}
-	return
-}
-
 func (c *adminClient) RestoreDynamicConfig(ctx context.Context, rp1 *types.RestoreDynamicConfigRequest, p1 ...yarpc.CallOption) (err error) {
 	fakeErr := c.fakeErrFn(c.errorRate)
 	var forwardCall bool
@@ -732,6 +692,26 @@ func (c *adminClient) UpdateGlobalIsolationGroups(ctx context.Context, request *
 	if fakeErr != nil {
 		c.logger.Error(msgAdminInjectedFakeErr,
 			tag.AdminClientOperationUpdateGlobalIsolationGroups,
+			tag.Error(fakeErr),
+			tag.Bool(forwardCall),
+			tag.ClientError(err),
+		)
+		err = fakeErr
+		return
+	}
+	return
+}
+
+func (c *adminClient) UpdateTaskListPartitionConfig(ctx context.Context, request *types.UpdateTaskListPartitionConfigRequest, opts ...yarpc.CallOption) (up1 *types.UpdateTaskListPartitionConfigResponse, err error) {
+	fakeErr := c.fakeErrFn(c.errorRate)
+	var forwardCall bool
+	if forwardCall = c.forwardCallFn(fakeErr); forwardCall {
+		up1, err = c.client.UpdateTaskListPartitionConfig(ctx, request, opts...)
+	}
+
+	if fakeErr != nil {
+		c.logger.Error(msgAdminInjectedFakeErr,
+			tag.AdminClientOperationUpdateTaskListPartitionConfig,
 			tag.Error(fakeErr),
 			tag.Bool(forwardCall),
 			tag.ClientError(err),

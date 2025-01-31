@@ -22,6 +22,7 @@ package domain
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"testing"
@@ -50,13 +51,14 @@ type (
 	domainHandlerGlobalDomainEnabledPrimaryClusterSuite struct {
 		*persistencetests.TestBase
 
-		minRetentionDays     int
-		maxBadBinaryCount    int
-		domainManager        persistence.DomainManager
-		mockProducer         *mocks.KafkaProducer
-		mockDomainReplicator Replicator
-		archivalMetadata     archiver.ArchivalMetadata
-		mockArchiverProvider *provider.MockArchiverProvider
+		minRetentionDays       int
+		maxBadBinaryCount      int
+		failoverHistoryMaxSize int
+		domainManager          persistence.DomainManager
+		mockProducer           *mocks.KafkaProducer
+		mockDomainReplicator   Replicator
+		archivalMetadata       archiver.ArchivalMetadata
+		mockArchiverProvider   *provider.MockArchiverProvider
 
 		handler *handlerImpl
 	}
@@ -89,6 +91,7 @@ func (s *domainHandlerGlobalDomainEnabledPrimaryClusterSuite) SetupTest() {
 	dcCollection := dc.NewCollection(dc.NewNopClient(), logger)
 	s.minRetentionDays = 1
 	s.maxBadBinaryCount = 10
+	s.failoverHistoryMaxSize = 5
 	s.domainManager = s.TestBase.DomainManager
 	s.mockProducer = &mocks.KafkaProducer{}
 	s.mockDomainReplicator = NewDomainReplicator(s.mockProducer, logger)
@@ -102,9 +105,10 @@ func (s *domainHandlerGlobalDomainEnabledPrimaryClusterSuite) SetupTest() {
 	)
 	s.mockArchiverProvider = &provider.MockArchiverProvider{}
 	domainConfig := Config{
-		MinRetentionDays:  dc.GetIntPropertyFn(s.minRetentionDays),
-		MaxBadBinaryCount: dc.GetIntPropertyFilteredByDomain(s.maxBadBinaryCount),
-		FailoverCoolDown:  dc.GetDurationPropertyFnFilteredByDomain(0 * time.Second),
+		MinRetentionDays:       dc.GetIntPropertyFn(s.minRetentionDays),
+		MaxBadBinaryCount:      dc.GetIntPropertyFilteredByDomain(s.maxBadBinaryCount),
+		FailoverCoolDown:       dc.GetDurationPropertyFnFilteredByDomain(0 * time.Second),
+		FailoverHistoryMaxSize: dc.GetIntPropertyFilteredByDomain(s.failoverHistoryMaxSize),
 	}
 	s.handler = NewHandler(
 		domainConfig,
@@ -114,7 +118,7 @@ func (s *domainHandlerGlobalDomainEnabledPrimaryClusterSuite) SetupTest() {
 		s.mockDomainReplicator,
 		s.archivalMetadata,
 		s.mockArchiverProvider,
-		clock.NewRealTimeSource(),
+		clock.NewMockedTimeSource(),
 	).(*handlerImpl)
 }
 
@@ -820,6 +824,11 @@ func (s *domainHandlerGlobalDomainEnabledPrimaryClusterSuite) TestUpdateGetDomai
 	})
 	s.Nil(err)
 
+	var failoverHistory []FailoverEvent
+	failoverHistory = append(failoverHistory, FailoverEvent{EventTime: s.handler.timeSource.Now(), FromCluster: prevActiveClusterName, ToCluster: nextActiveClusterName, FailoverType: common.FailoverType(common.FailoverTypeForce).String()})
+	failoverHistoryJSON, _ := json.Marshal(failoverHistory)
+	data[common.DomainDataKeyForFailoverHistory] = string(failoverHistoryJSON)
+
 	fnTest := func(info *types.DomainInfo, config *types.DomainConfiguration,
 		replicationConfig *types.DomainReplicationConfiguration, isGlobalDomain bool, failoverVersion int64) {
 		s.NotEmpty(info.GetUUID())
@@ -990,7 +999,7 @@ func (s *domainHandlerGlobalDomainEnabledPrimaryClusterSuite) setupGlobalDomain(
 	return setupGlobalDomain(s.Suite, s.handler, s.ClusterMetadata, domainName)
 }
 
-func setupGlobalDomain(s suite.Suite, handler *handlerImpl, clusterMetadata cluster.Metadata, domainName string) *types.DescribeDomainResponse {
+func setupGlobalDomain(s *suite.Suite, handler *handlerImpl, clusterMetadata cluster.Metadata, domainName string) *types.DescribeDomainResponse {
 	description := "some random description"
 	email := "some random email"
 	retention := int32(7)
@@ -1030,7 +1039,7 @@ func setupGlobalDomain(s suite.Suite, handler *handlerImpl, clusterMetadata clus
 	return getResp
 }
 
-func setupLocalDomain(s suite.Suite, handler *handlerImpl, clusterMetadata cluster.Metadata, domainName string) *types.DescribeDomainResponse {
+func setupLocalDomain(s *suite.Suite, handler *handlerImpl, clusterMetadata cluster.Metadata, domainName string) *types.DescribeDomainResponse {
 	description := "some random description"
 	email := "some random email"
 	retention := int32(7)
@@ -1060,8 +1069,8 @@ func setupLocalDomain(s suite.Suite, handler *handlerImpl, clusterMetadata clust
 	return getResp
 }
 
-func assertDomainEqual(s suite.Suite, autual, expected *types.DescribeDomainResponse) {
-	s.NotEmpty(autual.DomainInfo.GetUUID())
-	expected.DomainInfo.UUID = autual.DomainInfo.GetUUID()
-	s.Equal(expected, autual)
+func assertDomainEqual(s *suite.Suite, actual, expected *types.DescribeDomainResponse) {
+	s.NotEmpty(actual.DomainInfo.GetUUID())
+	expected.DomainInfo.UUID = actual.DomainInfo.GetUUID()
+	s.Equal(expected, actual)
 }

@@ -39,6 +39,7 @@ import (
 	"github.com/uber/cadence/common/types"
 	"github.com/uber/cadence/service/history/config"
 	"github.com/uber/cadence/service/history/engine"
+	"github.com/uber/cadence/service/history/lookup"
 	"github.com/uber/cadence/service/history/resource"
 )
 
@@ -293,7 +294,7 @@ func (c *controller) getOrCreateHistoryShardItem(shardID int) (*historyShardsIte
 	if c.isShuttingDown() || atomic.LoadInt32(&c.status) == common.DaemonStatusStopped {
 		return nil, fmt.Errorf("controller for host '%v' shutting down", c.GetHostInfo().Identity())
 	}
-	info, err := c.GetMembershipResolver().Lookup(service.History, string(rune(shardID)))
+	info, err := lookup.HistoryServerByShardID(c.GetMembershipResolver(), shardID)
 	if err != nil {
 		return nil, err
 	}
@@ -383,11 +384,18 @@ func (c *controller) acquireShards() {
 	sw := c.metricsScope.StartTimer(metrics.AcquireShardsLatency)
 	defer sw.Stop()
 
+	numShards := c.config.NumberOfShards
+	shardActionCh := make(chan int, numShards)
+	// Submit all tasks to the channel.
+	for shardID := 0; shardID < numShards; shardID++ {
+		shardActionCh <- shardID // must be non-blocking as there is no other coordination with shutdown
+	}
+	close(shardActionCh)
+
 	concurrency := common.MaxInt(c.config.AcquireShardConcurrency(), 1)
-	shardActionCh := make(chan int, concurrency)
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
-	// Spawn workers that would lookup and add/remove shards concurrently.
+	// Spawn workers that would do lookup and add/remove shards concurrently.
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			defer wg.Done()
@@ -395,7 +403,7 @@ func (c *controller) acquireShards() {
 				if c.isShuttingDown() {
 					return
 				}
-				info, err := c.GetMembershipResolver().Lookup(service.History, string(rune(shardID)))
+				info, err := lookup.HistoryServerByShardID(c.GetMembershipResolver(), shardID)
 				if err != nil {
 					c.logger.Error("Error looking up host for shardID", tag.Error(err), tag.OperationFailed, tag.ShardID(shardID))
 				} else {
@@ -410,14 +418,6 @@ func (c *controller) acquireShards() {
 			}
 		}()
 	}
-	// Submit tasks to the channel.
-	for shardID := 0; shardID < c.config.NumberOfShards; shardID++ {
-		shardActionCh <- shardID
-		if c.isShuttingDown() {
-			return
-		}
-	}
-	close(shardActionCh)
 	// Wait until all shards are processed.
 	wg.Wait()
 

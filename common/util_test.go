@@ -38,7 +38,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"github.com/uber-go/tally"
 	"go.uber.org/yarpc/yarpcerrors"
+	"golang.org/x/exp/maps"
 
 	"github.com/uber/cadence/common/backoff"
 	"github.com/uber/cadence/common/log"
@@ -96,6 +98,69 @@ func TestIsServiceTransientError(t *testing.T) {
 
 }
 
+func TestIsExpectedError(t *testing.T) {
+	for name, c := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"An error": {
+			err:  assert.AnError,
+			want: false,
+		},
+		"Transient error": {
+			err:  &types.ServiceBusyError{},
+			want: true,
+		},
+		"Entity not exists error": {
+			err:  &types.EntityNotExistsError{},
+			want: true,
+		},
+		"Already completed error": {
+			err:  &types.WorkflowExecutionAlreadyCompletedError{},
+			want: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, c.want, IsExpectedError(c.err))
+		})
+	}
+}
+
+func TestFrontendRetry(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "ServiceBusyError due to workflow id rate limiting",
+			err:  &types.ServiceBusyError{Reason: WorkflowIDRateLimitReason},
+			want: false,
+		},
+		{
+			name: "ServiceBusyError not due to workflow id rate limiting",
+			err:  &types.ServiceBusyError{Reason: "some other reason"},
+			want: true,
+		},
+		{
+			name: "ServiceBusyError empty reason",
+			err:  &types.ServiceBusyError{Reason: ""},
+			want: true,
+		},
+		{
+			name: "Non-ServiceBusyError",
+			err:  errors.New("some random error"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, FrontendRetry(tt.err))
+		})
+	}
+}
+
 func TestIsContextTimeoutError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
@@ -150,19 +215,49 @@ func TestCreateHistoryStartWorkflowRequest_ExpirationTimeWithCron(t *testing.T) 
 // with & without cron, delayStart and jitterStart.
 // - Also see tests in cron_test.go for more exhaustive testing.
 func TestFirstDecisionTaskBackoffDuringStartWorkflow(t *testing.T) {
+	firstRunTimestampPast, _ := time.Parse(time.RFC3339, "2017-12-17T08:00:00+00:00")
+	firstRunTimestampFuture, _ := time.Parse(time.RFC3339, "2018-12-17T08:00:02+00:00")
+	firstRunAtTimestampMap := map[string]int64{
+		"null":   0,
+		"past":   firstRunTimestampPast.UnixNano(),
+		"future": firstRunTimestampFuture.UnixNano(),
+	}
+
 	var tests = []struct {
-		cron               bool
-		jitterStartSeconds int32
-		delayStartSeconds  int32
+		cron                   bool
+		jitterStartSeconds     int32
+		delayStartSeconds      int32
+		firstRunAtTimeCategory string
 	}{
-		{true, 0, 0},
-		{true, 15, 0},
-		{true, 0, 600},
-		{true, 15, 600},
-		{false, 0, 0},
-		{false, 15, 0},
-		{false, 0, 600},
-		{false, 15, 600},
+		// Null first run at cases
+		{true, 0, 0, "null"},
+		{true, 15, 0, "null"},
+		{true, 0, 600, "null"},
+		{true, 15, 600, "null"},
+		{false, 0, 0, "null"},
+		{false, 15, 0, "null"},
+		{false, 0, 600, "null"},
+		{false, 15, 600, "null"},
+
+		// Past first run at cases
+		{true, 0, 0, "past"},
+		{true, 15, 0, "past"},
+		{true, 0, 600, "past"},
+		{true, 15, 600, "past"},
+		{false, 0, 0, "past"},
+		{false, 15, 0, "past"},
+		{false, 0, 600, "past"},
+		{false, 15, 600, "past"},
+
+		// Future first run at cases
+		{true, 0, 0, "future"},
+		{true, 15, 0, "future"},
+		{true, 0, 600, "future"},
+		{true, 15, 600, "future"},
+		{false, 0, 0, "future"},
+		{false, 15, 0, "future"},
+		{false, 0, 600, "future"},
+		{false, 15, 600, "future"},
 	}
 
 	rand.Seed(int64(time.Now().Nanosecond()))
@@ -171,8 +266,9 @@ func TestFirstDecisionTaskBackoffDuringStartWorkflow(t *testing.T) {
 		t.Run(strconv.Itoa(idx), func(t *testing.T) {
 			domainID := uuid.New()
 			request := &types.StartWorkflowExecutionRequest{
-				DelayStartSeconds:  Int32Ptr(tt.delayStartSeconds),
-				JitterStartSeconds: Int32Ptr(tt.jitterStartSeconds),
+				FirstRunAtTimeStamp: Int64Ptr(firstRunAtTimestampMap[tt.firstRunAtTimeCategory]),
+				DelayStartSeconds:   Int32Ptr(tt.delayStartSeconds),
+				JitterStartSeconds:  Int32Ptr(tt.jitterStartSeconds),
 			}
 			if tt.cron {
 				request.CronSchedule = "* * * * *"
@@ -200,28 +296,32 @@ func TestFirstDecisionTaskBackoffDuringStartWorkflow(t *testing.T) {
 					exactCount++
 				}
 
-				if tt.jitterStartSeconds == 0 {
-					require.Equal(t, expectedWithoutJitter, backoff, "test specs = %v", tt)
+				if tt.firstRunAtTimeCategory == "future" {
+					require.Equal(t, int32(2), backoff, "test specs = %v", tt)
 				} else {
-					require.True(t, backoff >= expectedWithoutJitter && backoff <= expectedMax,
-						"test specs = %v, backoff (%v) should be >= %v and <= %v",
-						tt, backoff, expectedWithoutJitter, expectedMax)
+					if tt.jitterStartSeconds == 0 {
+						require.Equal(t, expectedWithoutJitter, backoff, "test specs = %v", tt)
+					} else {
+						require.True(t, backoff >= expectedWithoutJitter && backoff <= expectedMax,
+							"test specs = %v, backoff (%v) should be >= %v and <= %v",
+							tt, backoff, expectedWithoutJitter, expectedMax)
+					}
 				}
-
 			}
 
+			// If firstRunTimestamp is either null or past ONLY
 			// If jitter is > 0, we want to detect whether jitter is being applied - BUT we don't want the test
 			// to be flaky if the code randomly chooses a jitter of 0, so we try to have enough data points by
 			// checking the next X cron times AND by choosing a jitter thats not super low.
-
-			if tt.jitterStartSeconds > 0 && exactCount == caseCount {
-				// Test to make sure a jitter test case sometimes doesn't get exact values
-				t.Fatalf("FAILED to jitter properly? Test specs = %v\n", tt)
-			} else if tt.jitterStartSeconds == 0 && exactCount != caseCount {
-				// Test to make sure a non-jitter test case always gets exact values
-				t.Fatalf("Jittered when we weren't supposed to? Test specs = %v\n", tt)
+			if tt.firstRunAtTimeCategory != "future" {
+				if tt.jitterStartSeconds > 0 && exactCount == caseCount {
+					// Test to make sure a jitter test case sometimes doesn't get exact values
+					t.Fatalf("FAILED to jitter properly? Test specs = %v\n", tt)
+				} else if tt.jitterStartSeconds == 0 && exactCount != caseCount {
+					// Test to make sure a non-jitter test case always gets exact values
+					t.Fatalf("Jittered when we weren't supposed to? Test specs = %v\n", tt)
+				}
 			}
-
 		})
 	}
 }
@@ -568,6 +668,12 @@ func TestCreateXXXRetryPolicyWithSetExpirationInterval(t *testing.T) {
 			wantInitialInterval:       replicationServiceBusyInitialInterval,
 			wantMaximumInterval:       replicationServiceBusyMaxInterval,
 			wantSetExpirationInterval: replicationServiceBusyExpirationInterval,
+		},
+		"CreateShardDistributorServiceRetryPolicy": {
+			createFn:                  CreateShardDistributorServiceRetryPolicy,
+			wantInitialInterval:       shardDistributorServiceOperationInitialInterval,
+			wantMaximumInterval:       shardDistributorServiceOperationMaxInterval,
+			wantSetExpirationInterval: shardDistributorServiceOperationExpirationInterval,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1532,6 +1638,99 @@ func TestSecondsToDuration(t *testing.T) {
 		t.Run(strconv.Itoa(int(seconds)), func(t *testing.T) {
 			got := SecondsToDuration(seconds)
 			require.Equal(t, want, got)
+		})
+	}
+}
+
+func TestNewPerTaskListScope(t *testing.T) {
+	assert.NotNil(t, NewPerTaskListScope("test-domain", "test-tasklist", types.TaskListKindNormal, metrics.NewNoopMetricsClient(), 0))
+	assert.NotNil(t, NewPerTaskListScope("test-domain", "test-tasklist", types.TaskListKindSticky, metrics.NewNoopMetricsClient(), 0))
+}
+
+func TestCheckEventBlobSizeLimit(t *testing.T) {
+	for name, c := range map[string]struct {
+		blobSize      int
+		warnSize      int
+		errSize       int
+		wantErr       error
+		prepareLogger func(*log.MockLogger)
+		assertMetrics func(tally.Snapshot)
+	}{
+		"blob size is less than limit": {
+			blobSize: 10,
+			warnSize: 20,
+			errSize:  30,
+			wantErr:  nil,
+		},
+		"blob size is greater than warn limit": {
+			blobSize: 21,
+			warnSize: 20,
+			errSize:  30,
+			wantErr:  nil,
+			prepareLogger: func(logger *log.MockLogger) {
+				logger.On("Warn", "Blob size close to the limit.", mock.Anything).Once()
+			},
+		},
+		"blob size is greater than error limit": {
+			blobSize: 31,
+			warnSize: 20,
+			errSize:  30,
+			wantErr:  ErrBlobSizeExceedsLimit,
+			prepareLogger: func(logger *log.MockLogger) {
+				logger.On("Error", "Blob size exceeds limit.", mock.Anything).Once()
+			},
+			assertMetrics: func(snapshot tally.Snapshot) {
+				counters := snapshot.Counters()
+				assert.Len(t, counters, 1)
+				values := maps.Values(counters)
+				assert.Equal(t, "test.blob_size_exceed_limit", values[0].Name())
+				assert.Equal(t, int64(1), values[0].Value())
+			},
+		},
+		"error limit is less then warn limit": {
+			blobSize: 21,
+			warnSize: 30,
+			errSize:  20,
+			wantErr:  ErrBlobSizeExceedsLimit,
+			prepareLogger: func(logger *log.MockLogger) {
+				logger.On("Warn", "Error limit is less than warn limit.", mock.Anything).Once()
+				logger.On("Error", "Blob size exceeds limit.", mock.Anything).Once()
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			testScope := tally.NewTestScope("test", nil)
+			metricsClient := metrics.NewClient(testScope, metrics.History)
+			logger := &log.MockLogger{}
+			defer logger.AssertExpectations(t)
+
+			if c.prepareLogger != nil {
+				c.prepareLogger(logger)
+			}
+
+			const (
+				domainID   = "testDomainID"
+				domainName = "testDomainName"
+				workflowID = "testWorkflowID"
+				runID      = "testRunID"
+			)
+
+			got := CheckEventBlobSizeLimit(
+				c.blobSize,
+				c.warnSize,
+				c.errSize,
+				domainID,
+				domainName,
+				workflowID,
+				runID,
+				metricsClient.Scope(1),
+				logger,
+				tag.OperationName("testOperation"),
+			)
+			require.Equal(t, c.wantErr, got)
+			if c.assertMetrics != nil {
+				c.assertMetrics(testScope.Snapshot())
+			}
 		})
 	}
 }

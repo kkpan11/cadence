@@ -34,6 +34,7 @@ import (
 //go:generate gowrap gen -g -p . -i Client -t ../templates/errorinjectors.tmpl -o ../wrappers/errorinjectors/frontend_generated.go -v client=Frontend
 //go:generate gowrap gen -g -p . -i Client -t ../templates/grpc.tmpl -o ../wrappers/grpc/frontend_generated.go -v client=Frontend -v package=apiv1 -v path=github.com/uber/cadence-idl/go/proto/api/v1 -v prefix=
 //go:generate gowrap gen -g -p . -i Client -t ../templates/thrift.tmpl -o ../wrappers/thrift/frontend_generated.go -v client=Frontend -v prefix=
+//go:generate gowrap gen -g -p . -i Client -t ../templates/timeout.tmpl -o ../wrappers/timeout/frontend_generated.go -v client=Frontend
 
 // Client is the interface exposed by frontend service client
 type Client interface {
@@ -42,6 +43,7 @@ type Client interface {
 	DescribeDomain(context.Context, *types.DescribeDomainRequest, ...yarpc.CallOption) (*types.DescribeDomainResponse, error)
 	DescribeTaskList(context.Context, *types.DescribeTaskListRequest, ...yarpc.CallOption) (*types.DescribeTaskListResponse, error)
 	DescribeWorkflowExecution(context.Context, *types.DescribeWorkflowExecutionRequest, ...yarpc.CallOption) (*types.DescribeWorkflowExecutionResponse, error)
+	DiagnoseWorkflowExecution(context.Context, *types.DiagnoseWorkflowExecutionRequest, ...yarpc.CallOption) (*types.DiagnoseWorkflowExecutionResponse, error)
 	GetClusterInfo(context.Context, ...yarpc.CallOption) (*types.ClusterInfo, error)
 	GetSearchAttributes(context.Context, ...yarpc.CallOption) (*types.GetSearchAttributesResponse, error)
 	GetWorkflowExecutionHistory(context.Context, *types.GetWorkflowExecutionHistoryRequest, ...yarpc.CallOption) (*types.GetWorkflowExecutionHistoryResponse, error)

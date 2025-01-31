@@ -23,6 +23,7 @@ package testdata
 import (
 	"github.com/pborman/uuid"
 
+	"github.com/uber/cadence/.gen/go/history"
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/types"
 )
@@ -274,6 +275,7 @@ var (
 		PrevAutoResetPoints:                 &ResetPoints,
 		Header:                              &Header,
 		PartitionConfig:                     PartitionConfig,
+		RequestID:                           RequestID,
 	}
 	WorkflowExecutionCompletedEventAttributes = types.WorkflowExecutionCompletedEventAttributes{
 		Result:                       Payload1,
@@ -313,6 +315,7 @@ var (
 		ForkEventVersion: Version1,
 		Reason:           Reason,
 		Cause:            &DecisionTaskTimedOutCause,
+		RequestID:        RequestID,
 	}
 	DecisionTaskFailedEventAttributes = types.DecisionTaskFailedEventAttributes{
 		ScheduledEventID: EventID1,
@@ -325,6 +328,7 @@ var (
 		NewRunID:         RunID2,
 		ForkEventVersion: Version1,
 		BinaryChecksum:   Checksum,
+		RequestID:        RequestID,
 	}
 	ActivityTaskScheduledEventAttributes = types.ActivityTaskScheduledEventAttributes{
 		ActivityID:                    ActivityID,
@@ -416,6 +420,7 @@ var (
 		SignalName: SignalName,
 		Input:      Payload1,
 		Identity:   Identity,
+		RequestID:  RequestID,
 	}
 	WorkflowExecutionTerminatedEventAttributes = types.WorkflowExecutionTerminatedEventAttributes{
 		Reason:   Reason,
@@ -427,6 +432,7 @@ var (
 		ExternalInitiatedEventID:  common.Int64Ptr(EventID1),
 		ExternalWorkflowExecution: &WorkflowExecution,
 		Identity:                  Identity,
+		RequestID:                 RequestID,
 	}
 	WorkflowExecutionCanceledEventAttributes = types.WorkflowExecutionCanceledEventAttributes{
 		DecisionTaskCompletedEventID: EventID1,
@@ -486,6 +492,9 @@ var (
 		Header:                              &Header,
 		Memo:                                &Memo,
 		SearchAttributes:                    &SearchAttributes,
+		DelayStartSeconds:                   &Duration3,
+		JitterStartSeconds:                  &Duration4,
+		FirstRunAtTimestamp:                 &Timestamp1,
 	}
 	StartChildWorkflowExecutionFailedEventAttributes = types.StartChildWorkflowExecutionFailedEventAttributes{
 		Domain:                       DomainName,
@@ -576,6 +585,18 @@ var (
 	GetFailoverInfoResponse = types.GetFailoverInfoResponse{
 		CompletedShardCount: 0,
 		PendingShards:       []int32{1, 2, 3},
+	}
+	RatelimitUpdateRequest = types.RatelimitUpdateRequest{
+		Any: &types.Any{
+			ValueType: history.WeightedRatelimitUsageAnyType, // only correct value currently
+			Value:     []byte("test request"),                // invalid contents, but not inspected in these tests
+		},
+	}
+	RatelimitUpdateResponse = types.RatelimitUpdateResponse{
+		Any: &types.Any{
+			ValueType: history.WeightedRatelimitQuotasAnyType, // only correct value currently
+			Value:     []byte("test response"),                // invalid contents, but not inspected in these tests
+		},
 	}
 )
 

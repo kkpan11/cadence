@@ -18,13 +18,17 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+//go:generate mockgen -package $GOPACKAGE -source $GOFILE -destination resource_mock.go -self_package github.com/uber/cadence/service/history/resource
+
 package resource
 
 import (
+	"fmt"
 	"sync/atomic"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/log/tag"
+	"github.com/uber/cadence/common/quotas/global/algorithm"
 	"github.com/uber/cadence/common/resource"
 	"github.com/uber/cadence/common/service"
 	"github.com/uber/cadence/service/history/config"
@@ -35,13 +39,15 @@ import (
 type Resource interface {
 	resource.Resource
 	GetEventCache() events.Cache
+	GetRatelimiterAlgorithm() algorithm.RequestWeighted
 }
 
 type resourceImpl struct {
 	status int32
 
 	resource.Resource
-	eventCache events.Cache
+	eventCache         events.Cache
+	ratelimitAlgorithm algorithm.RequestWeighted
 }
 
 // Start starts all resources
@@ -78,6 +84,9 @@ func (h *resourceImpl) Stop() {
 func (h *resourceImpl) GetEventCache() events.Cache {
 	return h.eventCache
 }
+func (h *resourceImpl) GetRatelimiterAlgorithm() algorithm.RequestWeighted {
+	return h.ratelimitAlgorithm
+}
 
 // New create a new resource containing common history dependencies
 func New(
@@ -93,9 +102,8 @@ func New(
 			PersistenceGlobalMaxQPS: config.PersistenceGlobalMaxQPS,
 			ThrottledLoggerMaxRPS:   config.ThrottledLogRPS,
 
-			EnableReadVisibilityFromES:      nil, // history service never read,
-			AdvancedVisibilityWritingMode:   config.AdvancedVisibilityWritingMode,
-			EnableReadVisibilityFromPinot:   nil, // history service never read,
+			ReadVisibilityStoreName:         nil, // history service never read,
+			WriteVisibilityStoreName:        config.WriteVisibilityStoreName,
 			EnableLogCustomerQueryParameter: nil, // log customer parameter will be done in front-end
 
 			EnableDBVisibilitySampling:                  config.EnableVisibilitySampling,
@@ -104,9 +112,10 @@ func New(
 			WriteDBVisibilityOpenMaxQPS:                 config.VisibilityOpenMaxQPS,
 			WriteDBVisibilityClosedMaxQPS:               config.VisibilityClosedMaxQPS,
 
-			ESVisibilityListMaxQPS: nil,                          // history service never read,
-			ESIndexMaxResultWindow: nil,                          // history service never read,
-			ValidSearchAttributes:  config.ValidSearchAttributes, // history service never read, (Pinot need this to initialize pinotQueryValidator)
+			ESVisibilityListMaxQPS:   nil,                          // history service never read,
+			ESIndexMaxResultWindow:   nil,                          // history service never read,
+			ValidSearchAttributes:    config.ValidSearchAttributes, // history service never read, (Pinot need this to initialize pinotQueryValidator)
+			IsErrorRetryableFunction: common.IsServiceTransientError,
 		},
 	)
 	if err != nil {
@@ -123,10 +132,24 @@ func New(
 		uint64(config.EventsCacheMaxSize()),
 		serviceResource.GetDomainCache(),
 	)
+	ratelimitAlgorithm, err := algorithm.New(
+		params.MetricsClient,
+		params.Logger,
+		algorithm.Config{
+			NewDataWeight:  config.GlobalRatelimiterNewDataWeight,
+			UpdateInterval: config.GlobalRatelimiterUpdateInterval,
+			DecayAfter:     config.GlobalRatelimiterDecayAfter,
+			GcAfter:        config.GlobalRatelimiterGCAfter,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ratelimit algorithm config: %w", err)
+	}
 
 	historyResource = &resourceImpl{
-		Resource:   serviceResource,
-		eventCache: eventCache,
+		Resource:           serviceResource,
+		eventCache:         eventCache,
+		ratelimitAlgorithm: ratelimitAlgorithm,
 	}
 	return
 }

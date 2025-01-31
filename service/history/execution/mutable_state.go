@@ -74,9 +74,9 @@ type (
 		AddCompletedWorkflowEvent(int64, *types.CompleteWorkflowExecutionDecisionAttributes) (*types.HistoryEvent, error)
 		AddContinueAsNewEvent(context.Context, int64, int64, string, *types.ContinueAsNewWorkflowExecutionDecisionAttributes) (*types.HistoryEvent, MutableState, error)
 		AddDecisionTaskCompletedEvent(int64, int64, *types.RespondDecisionTaskCompletedRequest, int) (*types.HistoryEvent, error)
-		AddDecisionTaskFailedEvent(scheduleEventID int64, startedEventID int64, cause types.DecisionTaskFailedCause, details []byte, identity, reason, binChecksum, baseRunID, newRunID string, forkEventVersion int64) (*types.HistoryEvent, error)
+		AddDecisionTaskFailedEvent(scheduleEventID int64, startedEventID int64, cause types.DecisionTaskFailedCause, details []byte, identity, reason, binChecksum, baseRunID, newRunID string, forkEventVersion int64, resetRequestID string) (*types.HistoryEvent, error)
 		AddDecisionTaskScheduleToStartTimeoutEvent(int64) (*types.HistoryEvent, error)
-		AddDecisionTaskResetTimeoutEvent(int64, string, string, int64, string) (*types.HistoryEvent, error)
+		AddDecisionTaskResetTimeoutEvent(int64, string, string, int64, string, string) (*types.HistoryEvent, error)
 		AddFirstDecisionTaskScheduled(*types.HistoryEvent) error
 		AddDecisionTaskScheduledEvent(bypassTaskGeneration bool) (*DecisionInfo, error)
 		AddDecisionTaskScheduledEventAsHeartbeat(bypassTaskGeneration bool, originalScheduledTimestamp int64) (*DecisionInfo, error)
@@ -101,7 +101,7 @@ type (
 		AddUpsertWorkflowSearchAttributesEvent(int64, *types.UpsertWorkflowSearchAttributesDecisionAttributes) (*types.HistoryEvent, error)
 		AddWorkflowExecutionCancelRequestedEvent(string, *types.HistoryRequestCancelWorkflowExecutionRequest) (*types.HistoryEvent, error)
 		AddWorkflowExecutionCanceledEvent(int64, *types.CancelWorkflowExecutionDecisionAttributes) (*types.HistoryEvent, error)
-		AddWorkflowExecutionSignaled(signalName string, input []byte, identity string) (*types.HistoryEvent, error)
+		AddWorkflowExecutionSignaled(signalName string, input []byte, identity string, reqeustID string) (*types.HistoryEvent, error)
 		AddWorkflowExecutionStartedEvent(types.WorkflowExecution, *types.HistoryStartWorkflowExecutionRequest) (*types.HistoryEvent, error)
 		AddWorkflowExecutionTerminatedEvent(firstEventID int64, reason string, details []byte, identity string) (*types.HistoryEvent, error)
 		ClearStickyness()
@@ -183,10 +183,10 @@ type (
 		ReplicateChildWorkflowExecutionTerminatedEvent(*types.HistoryEvent) error
 		ReplicateChildWorkflowExecutionTimedOutEvent(*types.HistoryEvent) error
 		ReplicateDecisionTaskCompletedEvent(*types.HistoryEvent) error
-		ReplicateDecisionTaskFailedEvent() error
+		ReplicateDecisionTaskFailedEvent(*types.HistoryEvent) error
 		ReplicateDecisionTaskScheduledEvent(int64, int64, string, int32, int64, int64, int64, bool) (*DecisionInfo, error)
 		ReplicateDecisionTaskStartedEvent(*DecisionInfo, int64, int64, int64, string, int64) (*DecisionInfo, error)
-		ReplicateDecisionTaskTimedOutEvent(types.TimeoutType) error
+		ReplicateDecisionTaskTimedOutEvent(*types.HistoryEvent) error
 		ReplicateExternalWorkflowExecutionCancelRequested(*types.HistoryEvent) error
 		ReplicateExternalWorkflowExecutionSignaled(*types.HistoryEvent) error
 		ReplicateRequestCancelExternalWorkflowExecutionFailedEvent(*types.HistoryEvent) error
@@ -221,13 +221,10 @@ type (
 		UpdateWorkflowStateCloseStatus(state int, closeStatus int) error
 
 		AddTransferTasks(transferTasks ...persistence.Task)
-		AddCrossClusterTasks(crossClusterTasks ...persistence.Task)
 		AddTimerTasks(timerTasks ...persistence.Task)
 		GetTransferTasks() []persistence.Task
-		GetCrossClusterTasks() []persistence.Task
 		GetTimerTasks() []persistence.Task
 		DeleteTransferTasks()
-		DeleteCrossClusterTasks()
 		DeleteTimerTasks()
 
 		SetUpdateCondition(int64)

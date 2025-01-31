@@ -18,6 +18,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+//go:generate mockgen -package $GOPACKAGE -destination versionChecker_mock.go -self_package github.com/uber/cadence/common/client github.com/uber/cadence/common/client VersionChecker
+
 package client
 
 import (
@@ -209,10 +211,11 @@ func (vc *versionChecker) SupportsStickyQuery(clientImpl string, clientFeatureVe
 // SupportsConsistentQuery returns error if consistent query is not supported otherwise nil.
 // In case client version lookup fails assume the client does not support feature.
 func (vc *versionChecker) SupportsConsistentQuery(clientImpl string, clientFeatureVersion string) error {
+
 	return vc.featureSupported(clientImpl, clientFeatureVersion, consistentQuery)
 }
 
-// SupportsSendRawWorkflowHistory returns error if raw history query is not supported otherwise nil.
+// SupportsRawHistoryQuery returns error if raw history query is not supported otherwise nil.
 // In case client version lookup fails assume the client does not support feature.
 func (vc *versionChecker) SupportsRawHistoryQuery(clientImpl string, clientFeatureVersion string) error {
 	return vc.featureSupported(clientImpl, clientFeatureVersion, rawHistoryQuery)

@@ -40,7 +40,7 @@ type (
 
 	// AdminDB is for tooling and testing
 	AdminDB interface {
-		SetupTestDatabase(schemaBaseDir string) error
+		SetupTestDatabase(schemaBaseDir string, replicas int) error
 		TeardownTestDatabase() error
 	}
 
@@ -119,7 +119,7 @@ type (
 	 * queue_metadata partition key: (queueType), range key: N/A, query condition column(version)
 	 */
 	MessageQueueCRUD interface {
-		//Insert message into queue, return error if failed or already exists
+		// Insert message into queue, return error if failed or already exists
 		// Must return conditionFailed error if row already exists
 		InsertIntoQueue(ctx context.Context, row *QueueMessageRow) error
 		// Get the ID of last message inserted into the queue
@@ -413,6 +413,7 @@ type (
 		// The API returns error if there is any. If any of the condition is not met, returns WorkflowOperationConditionFailure
 		InsertWorkflowExecutionWithTasks(
 			ctx context.Context,
+			requests *WorkflowRequestsWriteRequest,
 			currentWorkflowRequest *CurrentWorkflowWriteRequest,
 			execution *WorkflowExecutionRequest,
 			transferTasks []*TransferTask,
@@ -440,6 +441,7 @@ type (
 		// The API returns error if there is any. If any of the condition is not met, returns WorkflowOperationConditionFailure
 		UpdateWorkflowExecutionWithTasks(
 			ctx context.Context,
+			requests *WorkflowRequestsWriteRequest,
 			currentWorkflowRequest *CurrentWorkflowWriteRequest,
 			mutatedExecution *WorkflowExecutionRequest,
 			insertedExecution *WorkflowExecutionRequest,

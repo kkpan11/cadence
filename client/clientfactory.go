@@ -21,6 +21,7 @@
 package client
 
 import (
+	"fmt"
 	"time"
 
 	adminv1 "github.com/uber/cadence-idl/go/proto/admin/v1"
@@ -33,15 +34,17 @@ import (
 	"github.com/uber/cadence/.gen/go/matching/matchingserviceclient"
 	historyv1 "github.com/uber/cadence/.gen/proto/history/v1"
 	matchingv1 "github.com/uber/cadence/.gen/proto/matching/v1"
+	sharddistributorv1 "github.com/uber/cadence/.gen/proto/sharddistributor/v1"
 	"github.com/uber/cadence/client/admin"
 	"github.com/uber/cadence/client/frontend"
 	"github.com/uber/cadence/client/history"
 	"github.com/uber/cadence/client/matching"
+	"github.com/uber/cadence/client/sharddistributor"
 	"github.com/uber/cadence/client/wrappers/errorinjectors"
 	"github.com/uber/cadence/client/wrappers/grpc"
 	"github.com/uber/cadence/client/wrappers/metered"
 	"github.com/uber/cadence/client/wrappers/thrift"
-	"github.com/uber/cadence/common"
+	timeoutwrapper "github.com/uber/cadence/client/wrappers/timeout"
 	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/membership"
@@ -53,36 +56,41 @@ import (
 type (
 	// Factory can be used to create RPC clients for cadence services
 	Factory interface {
-		NewHistoryClient() (history.Client, error)
+		NewHistoryClient() (history.Client, history.PeerResolver, error)
 		NewMatchingClient(domainIDToName DomainIDToNameFunc) (matching.Client, error)
 
-		NewHistoryClientWithTimeout(timeout time.Duration) (history.Client, error)
+		NewHistoryClientWithTimeout(timeout time.Duration) (history.Client, history.PeerResolver, error)
 		NewMatchingClientWithTimeout(domainIDToName DomainIDToNameFunc, timeout time.Duration, longPollTimeout time.Duration) (matching.Client, error)
 
 		NewAdminClientWithTimeoutAndConfig(config transport.ClientConfig, timeout time.Duration, largeTimeout time.Duration) (admin.Client, error)
 		NewFrontendClientWithTimeoutAndConfig(config transport.ClientConfig, timeout time.Duration, longPollTimeout time.Duration) (frontend.Client, error)
+
+		NewShardDistributorClient() (sharddistributor.Client, error)
+		NewShardDistributorClientWithTimeout(timeout time.Duration) (sharddistributor.Client, error)
 	}
 
 	// DomainIDToNameFunc maps a domainID to domain name. Returns error when mapping is not possible.
 	DomainIDToNameFunc func(string) (string, error)
 
 	rpcClientFactory struct {
-		rpcFactory            common.RPCFactory
+		rpcFactory            rpc.Factory
 		resolver              membership.Resolver
 		metricsClient         metrics.Client
 		dynConfig             *dynamicconfig.Collection
 		numberOfHistoryShards int
+		allIsolationGroups    func() []string
 		logger                log.Logger
 	}
 )
 
 // NewRPCClientFactory creates an instance of client factory that knows how to dispatch RPC calls.
 func NewRPCClientFactory(
-	rpcFactory common.RPCFactory,
+	rpcFactory rpc.Factory,
 	resolver membership.Resolver,
 	metricsClient metrics.Client,
 	dc *dynamicconfig.Collection,
 	numberOfHistoryShards int,
+	allIsolationGroups func() []string,
 	logger log.Logger,
 ) Factory {
 	return &rpcClientFactory{
@@ -91,19 +99,20 @@ func NewRPCClientFactory(
 		metricsClient:         metricsClient,
 		dynConfig:             dc,
 		numberOfHistoryShards: numberOfHistoryShards,
+		allIsolationGroups:    allIsolationGroups,
 		logger:                logger,
 	}
 }
 
-func (cf *rpcClientFactory) NewHistoryClient() (history.Client, error) {
-	return cf.NewHistoryClientWithTimeout(history.DefaultTimeout)
+func (cf *rpcClientFactory) NewHistoryClient() (history.Client, history.PeerResolver, error) {
+	return cf.NewHistoryClientWithTimeout(timeoutwrapper.HistoryDefaultTimeout)
 }
 
 func (cf *rpcClientFactory) NewMatchingClient(domainIDToName DomainIDToNameFunc) (matching.Client, error) {
-	return cf.NewMatchingClientWithTimeout(domainIDToName, matching.DefaultTimeout, matching.DefaultLongPollTimeout)
+	return cf.NewMatchingClientWithTimeout(domainIDToName, timeoutwrapper.MatchingDefaultTimeout, timeoutwrapper.MatchingDefaultLongPollTimeout)
 }
 
-func (cf *rpcClientFactory) NewHistoryClientWithTimeout(timeout time.Duration) (history.Client, error) {
+func (cf *rpcClientFactory) NewHistoryClientWithTimeout(timeout time.Duration) (history.Client, history.PeerResolver, error) {
 	var rawClient history.Client
 	var namedPort = membership.PortTchannel
 
@@ -120,7 +129,6 @@ func (cf *rpcClientFactory) NewHistoryClientWithTimeout(timeout time.Duration) (
 	client := history.NewClient(
 		cf.numberOfHistoryShards,
 		cf.rpcFactory.GetMaxMessageSize(),
-		timeout,
 		rawClient,
 		peerResolver,
 		cf.logger,
@@ -131,7 +139,8 @@ func (cf *rpcClientFactory) NewHistoryClientWithTimeout(timeout time.Duration) (
 	if cf.metricsClient != nil {
 		client = metered.NewHistoryClient(client, cf.metricsClient)
 	}
-	return client, nil
+	client = timeoutwrapper.NewHistoryClient(client, timeout)
+	return client, peerResolver, nil
 }
 
 func (cf *rpcClientFactory) NewMatchingClientWithTimeout(
@@ -151,13 +160,24 @@ func (cf *rpcClientFactory) NewMatchingClientWithTimeout(
 
 	peerResolver := matching.NewPeerResolver(cf.resolver, namedPort)
 
+	partitionConfigProvider := matching.NewPartitionConfigProvider(cf.logger, cf.metricsClient, domainIDToName, cf.dynConfig)
+	defaultLoadBalancer := matching.NewLoadBalancer(partitionConfigProvider)
+	roundRobinLoadBalancer := matching.NewRoundRobinLoadBalancer(partitionConfigProvider)
+	weightedLoadBalancer := matching.NewWeightedLoadBalancer(roundRobinLoadBalancer, partitionConfigProvider, cf.logger)
+	igLoadBalancer := matching.NewIsolationLoadBalancer(weightedLoadBalancer, partitionConfigProvider, cf.allIsolationGroups)
+	loadBalancers := map[string]matching.LoadBalancer{
+		"random":      defaultLoadBalancer,
+		"round-robin": roundRobinLoadBalancer,
+		"weighted":    weightedLoadBalancer,
+		"isolation":   igLoadBalancer,
+	}
 	client := matching.NewClient(
-		timeout,
-		longPollTimeout,
 		rawClient,
 		peerResolver,
-		matching.NewLoadBalancer(domainIDToName, cf.dynConfig),
+		matching.NewMultiLoadBalancer(defaultLoadBalancer, loadBalancers, domainIDToName, cf.dynConfig, cf.logger),
+		partitionConfigProvider,
 	)
+	client = timeoutwrapper.NewMatchingClient(client, longPollTimeout, timeout)
 	if errorRate := cf.dynConfig.GetFloat64Property(dynamicconfig.MatchingErrorInjectionRate)(); errorRate != 0 {
 		client = errorinjectors.NewMatchingClient(client, errorRate, cf.logger)
 	}
@@ -165,7 +185,6 @@ func (cf *rpcClientFactory) NewMatchingClientWithTimeout(
 		client = metered.NewMatchingClient(client, cf.metricsClient)
 	}
 	return client, nil
-
 }
 
 func (cf *rpcClientFactory) NewAdminClientWithTimeoutAndConfig(
@@ -180,7 +199,7 @@ func (cf *rpcClientFactory) NewAdminClientWithTimeoutAndConfig(
 		client = thrift.NewAdminClient(adminserviceclient.New(config))
 	}
 
-	client = admin.NewClient(timeout, largeTimeout, client)
+	client = timeoutwrapper.NewAdminClient(client, largeTimeout, timeout)
 	if errorRate := cf.dynConfig.GetFloat64Property(dynamicconfig.AdminErrorInjectionRate)(); errorRate != 0 {
 		client = errorinjectors.NewAdminClient(client, errorRate, cf.logger)
 	}
@@ -207,12 +226,45 @@ func (cf *rpcClientFactory) NewFrontendClientWithTimeoutAndConfig(
 		client = thrift.NewFrontendClient(workflowserviceclient.New(config))
 	}
 
-	client = frontend.NewClient(timeout, longPollTimeout, client)
+	client = timeoutwrapper.NewFrontendClient(client, longPollTimeout, timeout)
 	if errorRate := cf.dynConfig.GetFloat64Property(dynamicconfig.FrontendErrorInjectionRate)(); errorRate != 0 {
 		client = errorinjectors.NewFrontendClient(client, errorRate, cf.logger)
 	}
 	if cf.metricsClient != nil {
 		client = metered.NewFrontendClient(client, cf.metricsClient)
 	}
+	return client, nil
+}
+
+func (cf *rpcClientFactory) NewShardDistributorClient() (sharddistributor.Client, error) {
+	return cf.NewShardDistributorClientWithTimeout(timeoutwrapper.ShardDistributorDefaultTimeout)
+}
+
+func (cf *rpcClientFactory) NewShardDistributorClientWithTimeout(
+	timeout time.Duration,
+) (sharddistributor.Client, error) {
+	outboundConfig, ok := cf.rpcFactory.GetDispatcher().OutboundConfig(service.ShardDistributor)
+	// If no outbound config is found, it means the service is not enabled, we just return nil as we don't want to
+	// break existing configs.
+	if !ok {
+		return nil, nil
+	}
+
+	if !rpc.IsGRPCOutbound(outboundConfig) {
+		return nil, fmt.Errorf("shard distributor client does not support non-GRPC outbound")
+	}
+
+	client := grpc.NewShardDistributorClient(
+		sharddistributorv1.NewShardDistributorAPIYARPCClient(outboundConfig),
+	)
+
+	client = timeoutwrapper.NewShardDistributorClient(client, timeout)
+	if errorRate := cf.dynConfig.GetFloat64Property(dynamicconfig.ShardDistributorErrorInjectionRate)(); errorRate != 0 {
+		client = errorinjectors.NewShardDistributorClient(client, errorRate, cf.logger)
+	}
+	if cf.metricsClient != nil {
+		client = metered.NewShardDistributorClient(client, cf.metricsClient)
+	}
+
 	return client, nil
 }

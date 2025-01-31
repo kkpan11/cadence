@@ -24,10 +24,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/pborman/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/backoff"
@@ -140,7 +140,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionStarted_No
 	now := time.Now()
 	evenType := types.EventTypeWorkflowExecutionStarted
 	startWorkflowAttribute := &types.WorkflowExecutionStartedEventAttributes{
-		ParentWorkflowDomain: common.StringPtr(constants.TestParentDomainName),
+		ParentWorkflowDomain: common.StringPtr(constants.TestDomainName),
 	}
 
 	event := &types.HistoryEvent{
@@ -151,8 +151,8 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionStarted_No
 		WorkflowExecutionStartedEventAttributes: startWorkflowAttribute,
 	}
 
-	s.mockDomainCache.EXPECT().GetDomain(constants.TestParentDomainName).Return(constants.TestGlobalParentDomainEntry, nil).Times(1)
-	s.mockMutableState.EXPECT().ReplicateWorkflowExecutionStartedEvent(&constants.TestParentDomainID, workflowExecution, requestID, event, true).Return(nil).Times(1)
+	s.mockDomainCache.EXPECT().GetDomain(constants.TestDomainName).Return(constants.TestGlobalParentDomainEntry, nil).Times(1)
+	s.mockMutableState.EXPECT().ReplicateWorkflowExecutionStartedEvent(&constants.TestDomainID, workflowExecution, requestID, event, true).Return(nil).Times(1)
 	s.mockUpdateVersion(event)
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(executionInfo).AnyTimes()
 	s.mockMutableState.EXPECT().ClearStickyness().Times(1)
@@ -183,8 +183,8 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionStarted_Wi
 	next, err := backoff.GetBackoffForNextSchedule(parsedSchedule, now, now, 0)
 	require.NoError(s.T(), err)
 	startWorkflowAttribute := &types.WorkflowExecutionStartedEventAttributes{
-		ParentWorkflowDomainID: common.StringPtr(constants.TestParentDomainID),
-		ParentWorkflowDomain:   common.StringPtr(constants.TestParentDomainName),
+		ParentWorkflowDomainID: common.StringPtr(constants.TestDomainID),
+		ParentWorkflowDomain:   common.StringPtr(constants.TestDomainName),
 		Initiator:              types.ContinueAsNewInitiatorCronSchedule.Ptr(),
 		FirstDecisionTaskBackoffSeconds: common.Int32Ptr(
 			int32(next.Seconds()),
@@ -199,8 +199,8 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionStarted_Wi
 		WorkflowExecutionStartedEventAttributes: startWorkflowAttribute,
 	}
 
-	s.mockDomainCache.EXPECT().GetDomain(constants.TestParentDomainName).Return(constants.TestGlobalParentDomainEntry, nil).Times(0)
-	s.mockMutableState.EXPECT().ReplicateWorkflowExecutionStartedEvent(&constants.TestParentDomainID, workflowExecution, requestID, event, true).Return(nil).Times(1)
+	s.mockDomainCache.EXPECT().GetDomain(constants.TestDomainName).Return(constants.TestGlobalParentDomainEntry, nil).Times(0)
+	s.mockMutableState.EXPECT().ReplicateWorkflowExecutionStartedEvent(&constants.TestDomainID, workflowExecution, requestID, event, true).Return(nil).Times(1)
 	s.mockUpdateVersion(event)
 	s.mockMutableState.EXPECT().GetExecutionInfo().Return(executionInfo).AnyTimes()
 	s.mockMutableState.EXPECT().ClearStickyness().Times(1)
@@ -383,8 +383,8 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionContinuedA
 		Timestamp: common.Int64Ptr(now.UnixNano()),
 		EventType: types.EventTypeWorkflowExecutionStarted.Ptr(),
 		WorkflowExecutionStartedEventAttributes: &types.WorkflowExecutionStartedEventAttributes{
-			ParentWorkflowDomainID: common.StringPtr(constants.TestParentDomainID),
-			ParentWorkflowDomain:   common.StringPtr(constants.TestParentDomainName),
+			ParentWorkflowDomainID: common.StringPtr(constants.TestDomainID),
+			ParentWorkflowDomain:   common.StringPtr(constants.TestDomainName),
 			ParentWorkflowExecution: &types.WorkflowExecution{
 				WorkflowID: parentWorkflowID,
 				RunID:      parentRunID,
@@ -436,7 +436,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionContinuedA
 	s.mockMutableState.EXPECT().ClearStickyness().Times(1)
 
 	// new workflow domain
-	s.mockDomainCache.EXPECT().GetDomain(constants.TestParentDomainName).Return(constants.TestGlobalParentDomainEntry, nil).AnyTimes()
+	s.mockDomainCache.EXPECT().GetDomain(constants.TestDomainName).Return(constants.TestGlobalParentDomainEntry, nil).AnyTimes()
 
 	newRunStateBuilder, err := s.stateBuilder.ApplyEvents(constants.TestDomainID, requestID, workflowExecution, s.toHistory(continueAsNewEvent), newRunEvents)
 	s.Nil(err)
@@ -475,7 +475,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeWorkflowExecutionContinuedA
 	s.mockMutableState.EXPECT().ClearStickyness().Times(1)
 
 	// new workflow domain
-	s.mockDomainCache.EXPECT().GetDomain(constants.TestParentDomainName).Return(constants.TestGlobalParentDomainEntry, nil).AnyTimes()
+	s.mockDomainCache.EXPECT().GetDomain(constants.TestDomainName).Return(constants.TestGlobalParentDomainEntry, nil).AnyTimes()
 	newRunStateBuilder, err := s.stateBuilder.ApplyEvents(constants.TestDomainID, requestID, workflowExecution, s.toHistory(continueAsNewEvent), nil)
 	s.Nil(err)
 	s.Nil(newRunStateBuilder)
@@ -706,7 +706,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeDecisionTaskTimedOut() {
 			TimeoutType:      types.TimeoutTypeStartToClose.Ptr(),
 		},
 	}
-	s.mockMutableState.EXPECT().ReplicateDecisionTaskTimedOutEvent(types.TimeoutTypeStartToClose).Return(nil).Times(1)
+	s.mockMutableState.EXPECT().ReplicateDecisionTaskTimedOutEvent(event).Return(nil).Times(1)
 	tasklist := "some random tasklist"
 	executionInfo := &persistence.WorkflowExecutionInfo{
 		TaskList: tasklist,
@@ -743,7 +743,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeDecisionTaskFailed() {
 			StartedEventID:   startedID,
 		},
 	}
-	s.mockMutableState.EXPECT().ReplicateDecisionTaskFailedEvent().Return(nil).Times(1)
+	s.mockMutableState.EXPECT().ReplicateDecisionTaskFailedEvent(event).Return(nil).Times(1)
 	tasklist := "some random tasklist"
 	executionInfo := &persistence.WorkflowExecutionInfo{
 		TaskList: tasklist,
@@ -1214,7 +1214,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeStartChildWorkflowExecution
 		Timestamp: common.Int64Ptr(now.UnixNano()),
 		EventType: &evenType,
 		StartChildWorkflowExecutionInitiatedEventAttributes: &types.StartChildWorkflowExecutionInitiatedEventAttributes{
-			Domain:     constants.TestTargetDomainName,
+			Domain:     constants.TestDomainName,
 			WorkflowID: targetWorkflowID,
 		},
 	}
@@ -1225,8 +1225,8 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeStartChildWorkflowExecution
 		InitiatedEventBatchID: event.ID,
 		StartedID:             common.EmptyEventID,
 		CreateRequestID:       createRequestID,
-		DomainID:              constants.TestTargetDomainID,
-		DomainNameDEPRECATED:  constants.TestTargetDomainName,
+		DomainID:              constants.TestDomainID,
+		DomainNameDEPRECATED:  constants.TestDomainName,
 	}
 
 	// the create request ID is generated inside, cannot assert equal
@@ -1428,7 +1428,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeRequestCancelExternalWorkfl
 		Timestamp: common.Int64Ptr(now.UnixNano()),
 		EventType: &evenType,
 		RequestCancelExternalWorkflowExecutionInitiatedEventAttributes: &types.RequestCancelExternalWorkflowExecutionInitiatedEventAttributes{
-			Domain: constants.TestTargetDomainName,
+			Domain: constants.TestDomainName,
 			WorkflowExecution: &types.WorkflowExecution{
 				WorkflowID: targetWorkflowID,
 				RunID:      targetRunID,
@@ -1561,7 +1561,7 @@ func (s *stateBuilderSuite) TestApplyEvents_EventTypeSignalExternalWorkflowExecu
 		Timestamp: common.Int64Ptr(now.UnixNano()),
 		EventType: &evenType,
 		SignalExternalWorkflowExecutionInitiatedEventAttributes: &types.SignalExternalWorkflowExecutionInitiatedEventAttributes{
-			Domain: constants.TestTargetDomainName,
+			Domain: constants.TestDomainName,
 			WorkflowExecution: &types.WorkflowExecution{
 				WorkflowID: targetWorkflowID,
 				RunID:      targetRunID,

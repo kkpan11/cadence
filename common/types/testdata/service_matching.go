@@ -31,6 +31,15 @@ const (
 )
 
 var (
+	TaskListPartitionConfig = types.TaskListPartitionConfig{
+		Version:            1,
+		NumReadPartitions:  3,
+		NumWritePartitions: 2,
+	}
+	LoadBalancerHints = types.LoadBalancerHints{
+		BacklogCount:  1000,
+		RatePerSecond: 1.0,
+	}
 	MatchingAddActivityTaskRequest = types.AddActivityTaskRequest{
 		DomainUUID:                    DomainID,
 		Execution:                     &WorkflowExecution,
@@ -51,6 +60,12 @@ var (
 		Source:                        types.TaskSourceDbBacklog.Ptr(),
 		ForwardedFrom:                 ForwardedFrom,
 		PartitionConfig:               PartitionConfig,
+	}
+	MatchingAddActivityTaskResponse = types.AddActivityTaskResponse{
+		PartitionConfig: &TaskListPartitionConfig,
+	}
+	MatchingAddDecisionTaskResponse = types.AddDecisionTaskResponse{
+		PartitionConfig: &TaskListPartitionConfig,
 	}
 	MatchingCancelOutstandingPollRequest = types.CancelOutstandingPollRequest{
 		DomainUUID:   DomainID,
@@ -81,7 +96,7 @@ var (
 		ForwardedFrom:  ForwardedFrom,
 		IsolationGroup: IsolationGroup,
 	}
-	MatchingPollForActivityTaskResponse = types.PollForActivityTaskResponse{
+	MatchingPollForActivityTaskResponse = types.MatchingPollForActivityTaskResponse{
 		TaskToken:                       TaskToken,
 		WorkflowExecution:               &WorkflowExecution,
 		ActivityID:                      ActivityID,
@@ -98,6 +113,9 @@ var (
 		WorkflowType:                    &WorkflowType,
 		WorkflowDomain:                  DomainName,
 		Header:                          &Header,
+		PartitionConfig:                 &TaskListPartitionConfig,
+		LoadBalancerHints:               &LoadBalancerHints,
+		AutoConfigHint:                  &AutoConfigHint,
 	}
 	MatchingPollForDecisionTaskRequest = types.MatchingPollForDecisionTaskRequest{
 		DomainUUID:     DomainID,
@@ -124,6 +142,9 @@ var (
 		ScheduledTimestamp:        &Timestamp1,
 		StartedTimestamp:          &Timestamp2,
 		Queries:                   WorkflowQueryMap,
+		PartitionConfig:           &TaskListPartitionConfig,
+		LoadBalancerHints:         &LoadBalancerHints,
+		AutoConfigHint:            &AutoConfigHint,
 	}
 	MatchingQueryWorkflowRequest = types.MatchingQueryWorkflowRequest{
 		DomainUUID:    DomainID,
@@ -151,4 +172,28 @@ var (
 	}
 
 	DescribeTaskListResponseMap = map[string]*types.DescribeTaskListResponse{DomainName: &MatchingDescribeTaskListResponse}
+
+	MatchingActivityTaskDispatchInfo = types.ActivityTaskDispatchInfo{
+		ScheduledEvent:                  &HistoryEvent_WorkflowExecutionStarted,
+		StartedTimestamp:                &Timestamp1,
+		Attempt:                         &Attempt2,
+		ScheduledTimestampOfThisAttempt: &Timestamp1,
+		HeartbeatDetails:                Payload2,
+		WorkflowType:                    &WorkflowType,
+		WorkflowDomain:                  DomainName,
+	}
+
+	MatchingUpdateTaskListPartitionConfigRequest = types.MatchingUpdateTaskListPartitionConfigRequest{
+		DomainUUID:      DomainID,
+		TaskList:        &TaskList,
+		TaskListType:    &TaskListType,
+		PartitionConfig: &TaskListPartitionConfig,
+	}
+
+	MatchingRefreshTaskListPartitionConfigRequest = types.MatchingRefreshTaskListPartitionConfigRequest{
+		DomainUUID:      DomainID,
+		TaskList:        &TaskList,
+		TaskListType:    &TaskListType,
+		PartitionConfig: &TaskListPartitionConfig,
+	}
 )

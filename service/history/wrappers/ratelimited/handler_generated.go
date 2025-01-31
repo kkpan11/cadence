@@ -32,8 +32,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/uber/cadence/common/cache"
-	"github.com/uber/cadence/common/dynamicconfig"
+	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/types"
 	"github.com/uber/cadence/service/frontend/validate"
@@ -43,28 +42,22 @@ import (
 
 // historyHandler implements handler.Handler interface instrumented with rate limiter.
 type historyHandler struct {
-	wrapped                        handler.Handler
-	workflowIDCache                workflowcache.WFCache
-	ratelimitExternalPerWorkflowID dynamicconfig.BoolPropertyFnWithDomainFilter
-	domainCache                    cache.DomainCache
-	logger                         log.Logger
-	allowFunc                      func(domainID string, workflowID string) bool
+	wrapped         handler.Handler
+	workflowIDCache workflowcache.WFCache
+	logger          log.Logger
+	allowFunc       func(domainID string, workflowID string) bool
 }
 
 // NewHistoryHandler creates a new instance of Handler with ratelimiter.
 func NewHistoryHandler(
 	wrapped handler.Handler,
 	workflowIDCache workflowcache.WFCache,
-	ratelimitExternalPerWorkflowID dynamicconfig.BoolPropertyFnWithDomainFilter,
-	domainCache cache.DomainCache,
 	logger log.Logger,
 ) handler.Handler {
 	wrapper := &historyHandler{
-		wrapped:                        wrapped,
-		workflowIDCache:                workflowIDCache,
-		ratelimitExternalPerWorkflowID: ratelimitExternalPerWorkflowID,
-		domainCache:                    domainCache,
-		logger:                         logger,
+		wrapped:         wrapped,
+		workflowIDCache: workflowIDCache,
+		logger:          logger,
 	}
 	wrapper.allowFunc = wrapper.allowWfID
 
@@ -109,7 +102,10 @@ func (h *historyHandler) DescribeWorkflowExecution(ctx context.Context, hp1 *typ
 	}
 
 	if !h.allowFunc(hp1.GetDomainUUID(), hp1.Request.GetExecution().GetWorkflowID()) {
-		err = &types.ServiceBusyError{"Too many requests for the workflow ID"}
+		err = &types.ServiceBusyError{
+			Message: "Too many requests for the workflow ID",
+			Reason:  common.WorkflowIDRateLimitReason,
+		}
 		return
 	}
 	return h.wrapped.DescribeWorkflowExecution(ctx, hp1)
@@ -161,6 +157,10 @@ func (h *historyHandler) PurgeDLQMessages(ctx context.Context, pp1 *types.PurgeD
 
 func (h *historyHandler) QueryWorkflow(ctx context.Context, hp1 *types.HistoryQueryWorkflowRequest) (hp2 *types.HistoryQueryWorkflowResponse, err error) {
 	return h.wrapped.QueryWorkflow(ctx, hp1)
+}
+
+func (h *historyHandler) RatelimitUpdate(ctx context.Context, rp1 *types.RatelimitUpdateRequest) (rp2 *types.RatelimitUpdateResponse, err error) {
+	return h.wrapped.RatelimitUpdate(ctx, rp1)
 }
 
 func (h *historyHandler) ReadDLQMessages(ctx context.Context, rp1 *types.ReadDLQMessagesRequest) (rp2 *types.ReadDLQMessagesResponse, err error) {
@@ -265,7 +265,10 @@ func (h *historyHandler) SignalWithStartWorkflowExecution(ctx context.Context, h
 	}
 
 	if !h.allowFunc(hp1.GetDomainUUID(), hp1.SignalWithStartRequest.GetWorkflowID()) {
-		err = &types.ServiceBusyError{"Too many requests for the workflow ID"}
+		err = &types.ServiceBusyError{
+			Message: "Too many requests for the workflow ID",
+			Reason:  common.WorkflowIDRateLimitReason,
+		}
 		return
 	}
 	return h.wrapped.SignalWithStartWorkflowExecution(ctx, hp1)
@@ -289,7 +292,10 @@ func (h *historyHandler) SignalWorkflowExecution(ctx context.Context, hp1 *types
 	}
 
 	if !h.allowFunc(hp1.GetDomainUUID(), hp1.SignalRequest.GetWorkflowExecution().GetWorkflowID()) {
-		err = &types.ServiceBusyError{"Too many requests for the workflow ID"}
+		err = &types.ServiceBusyError{
+			Message: "Too many requests for the workflow ID",
+			Reason:  common.WorkflowIDRateLimitReason,
+		}
 		return
 	}
 	return h.wrapped.SignalWorkflowExecution(ctx, hp1)
@@ -318,7 +324,10 @@ func (h *historyHandler) StartWorkflowExecution(ctx context.Context, hp1 *types.
 	}
 
 	if !h.allowFunc(hp1.GetDomainUUID(), hp1.StartRequest.GetWorkflowID()) {
-		err = &types.ServiceBusyError{"Too many requests for the workflow ID"}
+		err = &types.ServiceBusyError{
+			Message: "Too many requests for the workflow ID",
+			Reason:  common.WorkflowIDRateLimitReason,
+		}
 		return
 	}
 	return h.wrapped.StartWorkflowExecution(ctx, hp1)

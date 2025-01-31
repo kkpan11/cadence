@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/uber/cadence/.gen/go/shared"
 	"github.com/uber/cadence/common"
 	"github.com/uber/cadence/common/backoff"
 	"github.com/uber/cadence/common/log"
@@ -57,7 +58,7 @@ type (
 func NewTimerActiveTaskExecutor(
 	shard shard.Context,
 	archiverClient archiver.Client,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	logger log.Logger,
 	metricsClient metrics.Client,
 	config *config.Config,
@@ -87,24 +88,36 @@ func (t *timerActiveTaskExecutor) Execute(
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), taskDefaultTimeout)
-	defer cancel()
-
 	switch timerTask.TaskType {
 	case persistence.TaskTypeUserTimer:
+		ctx, cancel := context.WithTimeout(t.ctx, taskDefaultTimeout)
+		defer cancel()
 		return t.executeUserTimerTimeoutTask(ctx, timerTask)
 	case persistence.TaskTypeActivityTimeout:
+		ctx, cancel := context.WithTimeout(t.ctx, taskDefaultTimeout)
+		defer cancel()
 		return t.executeActivityTimeoutTask(ctx, timerTask)
 	case persistence.TaskTypeDecisionTimeout:
+		ctx, cancel := context.WithTimeout(t.ctx, taskDefaultTimeout)
+		defer cancel()
 		return t.executeDecisionTimeoutTask(ctx, timerTask)
 	case persistence.TaskTypeWorkflowTimeout:
+		ctx, cancel := context.WithTimeout(t.ctx, taskDefaultTimeout)
+		defer cancel()
 		return t.executeWorkflowTimeoutTask(ctx, timerTask)
 	case persistence.TaskTypeActivityRetryTimer:
+		ctx, cancel := context.WithTimeout(t.ctx, taskDefaultTimeout)
+		defer cancel()
 		return t.executeActivityRetryTimerTask(ctx, timerTask)
 	case persistence.TaskTypeWorkflowBackoffTimer:
+		ctx, cancel := context.WithTimeout(t.ctx, taskDefaultTimeout)
+		defer cancel()
 		return t.executeWorkflowBackoffTimerTask(ctx, timerTask)
 	case persistence.TaskTypeDeleteHistoryEvent:
-		return t.executeDeleteHistoryEventTask(ctx, timerTask)
+		// special timeout for delete history event
+		deleteHistoryEventContext, deleteHistoryEventCancel := context.WithTimeout(t.ctx, time.Duration(t.config.DeleteHistoryEventContextTimeout())*time.Second)
+		defer deleteHistoryEventCancel()
+		return t.executeDeleteHistoryEventTask(deleteHistoryEventContext, timerTask)
 	default:
 		return errUnknownTimerTask
 	}
@@ -154,7 +167,7 @@ func (t *timerActiveTaskExecutor) executeUserTimerTimeoutTask(
 	// is encountered, so that we don't need to scan history multiple times
 	// where there're multiple timers with high delay
 	var resurrectedTimer map[string]struct{}
-	scanWorkflowCtx, cancel := context.WithTimeout(context.Background(), scanWorkflowTimeout)
+	scanWorkflowCtx, cancel := context.WithTimeout(t.ctx, scanWorkflowTimeout)
 	defer cancel()
 
 	sortedUserTimers := timerSequence.LoadAndSortUserTimers()
@@ -301,7 +314,7 @@ func (t *timerActiveTaskExecutor) executeActivityTimeoutTask(
 	// is encountered, so that we don't need to scan history multiple times
 	// where there're multiple timers with high delay
 	var resurrectedActivity map[int64]struct{}
-	scanWorkflowCtx, cancel := context.WithTimeout(context.Background(), scanWorkflowTimeout)
+	scanWorkflowCtx, cancel := context.WithTimeout(t.ctx, scanWorkflowTimeout)
 	defer cancel()
 
 	// need to clear activity heartbeat timer task mask for new activity timer task creation
@@ -418,6 +431,7 @@ Loop:
 			tag.WorkflowRunID(task.GetRunID()),
 			tag.ScheduleAttempt(task.ScheduleAttempt),
 			tag.FailoverVersion(task.GetVersion()),
+			tag.ActivityTimeoutType(shared.TimeoutType(timerSequenceID.TimerType)),
 		)
 
 		if _, err := mutableState.AddActivityTaskTimedOutEvent(
@@ -667,7 +681,7 @@ func (t *timerActiveTaskExecutor) executeActivityRetryTimerTask(
 
 	release(nil) // release earlier as we don't need the lock anymore
 
-	return t.shard.GetService().GetMatchingClient().AddActivityTask(ctx, &types.AddActivityTaskRequest{
+	_, err = t.shard.GetService().GetMatchingClient().AddActivityTask(ctx, &types.AddActivityTaskRequest{
 		DomainUUID:                    targetDomainID,
 		SourceDomainUUID:              domainID,
 		Execution:                     &execution,
@@ -676,6 +690,7 @@ func (t *timerActiveTaskExecutor) executeActivityRetryTimerTask(
 		ScheduleToStartTimeoutSeconds: common.Int32Ptr(scheduleToStartTimeout),
 		PartitionConfig:               mutableState.GetExecutionInfo().PartitionConfig,
 	})
+	return err
 }
 
 func (t *timerActiveTaskExecutor) executeWorkflowTimeoutTask(

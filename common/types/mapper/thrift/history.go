@@ -232,6 +232,7 @@ func FromHistoryGetMutableStateRequest(t *types.GetMutableStateRequest) *history
 		Execution:           FromWorkflowExecution(t.Execution),
 		ExpectedNextEventId: &t.ExpectedNextEventID,
 		CurrentBranchToken:  t.CurrentBranchToken,
+		VersionHistoryItem:  FromVersionHistoryItem(t.VersionHistoryItem),
 	}
 }
 
@@ -245,6 +246,7 @@ func ToHistoryGetMutableStateRequest(t *history.GetMutableStateRequest) *types.G
 		Execution:           ToWorkflowExecution(t.Execution),
 		ExpectedNextEventID: t.GetExpectedNextEventId(),
 		CurrentBranchToken:  t.CurrentBranchToken,
+		VersionHistoryItem:  ToVersionHistoryItem(t.VersionHistoryItem),
 	}
 }
 
@@ -629,6 +631,7 @@ func FromRecordChildExecutionCompletedRequest(t *types.RecordChildExecutionCompl
 		InitiatedId:        &t.InitiatedID,
 		CompletedExecution: FromWorkflowExecution(t.CompletedExecution),
 		CompletionEvent:    FromHistoryEvent(t.CompletionEvent),
+		StartedId:          &t.StartedID,
 	}
 }
 
@@ -643,6 +646,7 @@ func ToRecordChildExecutionCompletedRequest(t *history.RecordChildExecutionCompl
 		InitiatedID:        t.GetInitiatedId(),
 		CompletedExecution: ToWorkflowExecution(t.CompletedExecution),
 		CompletionEvent:    ToHistoryEvent(t.CompletionEvent),
+		StartedID:          t.GetStartedId(),
 	}
 }
 
@@ -1363,5 +1367,38 @@ func ToGetFailoverInfoResponse(t *history.GetFailoverInfoResponse) *types.GetFai
 	return &types.GetFailoverInfoResponse{
 		CompletedShardCount: t.GetCompletedShardCount(),
 		PendingShards:       t.GetPendingShards(),
+	}
+}
+
+func FromHistoryRatelimitUpdateRequest(t *types.RatelimitUpdateRequest) *history.RatelimitUpdateRequest {
+	if t == nil {
+		return nil
+	}
+	return &history.RatelimitUpdateRequest{
+		Data: FromAny(t.Any),
+	}
+}
+func ToHistoryRatelimitUpdateRequest(t *history.RatelimitUpdateRequest) *types.RatelimitUpdateRequest {
+	if t == nil {
+		return nil
+	}
+	return &types.RatelimitUpdateRequest{
+		Any: ToAny(t.Data),
+	}
+}
+func FromHistoryRatelimitUpdateResponse(t *types.RatelimitUpdateResponse) *history.RatelimitUpdateResponse {
+	if t == nil {
+		return nil
+	}
+	return &history.RatelimitUpdateResponse{
+		Data: FromAny(t.Any),
+	}
+}
+func ToHistoryRatelimitUpdateResponse(t *history.RatelimitUpdateResponse) *types.RatelimitUpdateResponse {
+	if t == nil {
+		return nil
+	}
+	return &types.RatelimitUpdateResponse{
+		Any: ToAny(t.Data),
 	}
 }

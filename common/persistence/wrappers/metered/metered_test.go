@@ -28,9 +28,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/uber-go/tally"
+	"go.uber.org/mock/gomock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 
@@ -40,6 +40,7 @@ import (
 	"github.com/uber/cadence/common/log/loggerimpl"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/persistence"
+	"github.com/uber/cadence/common/types"
 )
 
 var _staticMethods = map[string]bool{
@@ -152,17 +153,35 @@ func TestWrappersAgainstPreviousImplementation(t *testing.T) {
 				runScenario(t, wrapper, logs, metricScope)
 			})
 			t.Run("with error", func(t *testing.T) {
-				ctrl := gomock.NewController(t)
+				for _, errorType := range []error{
+					&types.DomainAlreadyExistsError{},
+					&types.BadRequestError{},
+					&types.EntityNotExistsError{},
+					&types.ServiceBusyError{},
+					&persistence.WorkflowExecutionAlreadyStartedError{},
+					&persistence.ConditionFailedError{},
+					&persistence.CurrentWorkflowConditionFailedError{},
+					&persistence.ShardAlreadyExistError{},
+					&persistence.ShardOwnershipLostError{},
+					&persistence.DuplicateRequestError{},
+					&persistence.TimeoutError{},
+					&persistence.DBUnavailableError{},
+					errors.New("persistence error"),
+				} {
+					t.Run(reflect.TypeOf(errorType).String(), func(t *testing.T) {
+						ctrl := gomock.NewController(t)
 
-				zapLogger, logs := setupLogsCapture()
-				metricScope := tally.NewTestScope("", nil)
-				metricsClient := metrics.NewClient(metricScope, metrics.ServiceIdx(0))
-				logger := loggerimpl.NewLogger(zapLogger)
+						zapLogger, logs := setupLogsCapture()
+						metricScope := tally.NewTestScope("", nil)
+						metricsClient := metrics.NewClient(metricScope, metrics.ServiceIdx(0))
+						logger := loggerimpl.NewLogger(zapLogger)
 
-				newObj, mocked := tc.prepareMock(t, ctrl, metricsClient, logger)
-				prepareMockForTest(t, mocked, errors.New("persistence error"))
+						newObj, mocked := tc.prepareMock(t, ctrl, metricsClient, logger)
+						prepareMockForTest(t, mocked, errorType)
 
-				runScenario(t, newObj, logs, metricScope)
+						runScenario(t, newObj, logs, metricScope)
+					})
+				}
 			})
 		})
 	}
@@ -216,6 +235,7 @@ func prepareMockForTest(t *testing.T, input interface{}, expectedErr error) {
 		mocked.EXPECT().GetOrphanTasks(gomock.Any(), gomock.Any()).Return(&persistence.GetOrphanTasksResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().GetTaskListSize(gomock.Any(), gomock.Any()).Return(&persistence.GetTaskListSizeResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().LeaseTaskList(gomock.Any(), gomock.Any()).Return(&persistence.LeaseTaskListResponse{}, expectedErr).Times(1)
+		mocked.EXPECT().GetTaskList(gomock.Any(), gomock.Any()).Return(&persistence.GetTaskListResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().ListTaskList(gomock.Any(), gomock.Any()).Return(&persistence.ListTaskListResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().UpdateTaskList(gomock.Any(), gomock.Any()).Return(&persistence.UpdateTaskListResponse{}, expectedErr).Times(1)
 	case *persistence.MockVisibilityManager:
@@ -245,13 +265,10 @@ func prepareMockForTest(t *testing.T, input interface{}, expectedErr error) {
 		mocked.EXPECT().DeleteWorkflowExecution(gomock.Any(), gomock.Any()).Return(expectedErr).Times(1)
 		mocked.EXPECT().DeleteCurrentWorkflowExecution(gomock.Any(), gomock.Any()).Return(expectedErr).Times(1)
 		mocked.EXPECT().GetCurrentExecution(gomock.Any(), gomock.Any()).Return(&persistence.GetCurrentExecutionResponse{}, expectedErr).Times(1)
-		mocked.EXPECT().CompleteCrossClusterTask(gomock.Any(), gomock.Any()).Return(expectedErr).Times(1)
-		mocked.EXPECT().RangeCompleteCrossClusterTask(gomock.Any(), gomock.Any()).Return(&persistence.RangeCompleteCrossClusterTaskResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().CompleteReplicationTask(gomock.Any(), gomock.Any()).Return(expectedErr).Times(1)
 		mocked.EXPECT().ConflictResolveWorkflowExecution(gomock.Any(), gomock.Any()).Return(&persistence.ConflictResolveWorkflowExecutionResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().CreateFailoverMarkerTasks(gomock.Any(), gomock.Any()).Return(expectedErr).Times(1)
 		mocked.EXPECT().DeleteReplicationTaskFromDLQ(gomock.Any(), gomock.Any()).Return(expectedErr).Times(1)
-		mocked.EXPECT().GetCrossClusterTasks(gomock.Any(), gomock.Any()).Return(&persistence.GetCrossClusterTasksResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().GetReplicationDLQSize(gomock.Any(), gomock.Any()).Return(&persistence.GetReplicationDLQSizeResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().GetReplicationTasks(gomock.Any(), gomock.Any()).Return(&persistence.GetReplicationTasksResponse{}, expectedErr).Times(1)
 		mocked.EXPECT().GetReplicationTasksFromDLQ(gomock.Any(), gomock.Any()).Return(&persistence.GetReplicationTasksFromDLQResponse{}, expectedErr).Times(1)

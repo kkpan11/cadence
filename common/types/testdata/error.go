@@ -22,6 +22,7 @@ package testdata
 
 import (
 	"github.com/uber/cadence/common"
+	cadence_errors "github.com/uber/cadence/common/errors"
 	"github.com/uber/cadence/common/types"
 )
 
@@ -43,6 +44,9 @@ var (
 		FeatureVersion:    FeatureVersion,
 		ClientImpl:        ClientImpl,
 		SupportedVersions: SupportedVersions,
+	}
+	FeatureNotEnabledError = types.FeatureNotEnabledError{
+		FeatureFlag: FeatureFlag,
 	}
 	CurrentBranchChangedError = types.CurrentBranchChangedError{
 		Message:            ErrorMessage,
@@ -95,6 +99,7 @@ var (
 	}
 	ServiceBusyError = types.ServiceBusyError{
 		Message: ErrorMessage,
+		Reason:  ErrorReason,
 	}
 	ShardOwnershipLostError = types.ShardOwnershipLostError{
 		Message: ErrorMessage,
@@ -108,4 +113,38 @@ var (
 	StickyWorkerUnavailableError = types.StickyWorkerUnavailableError{
 		Message: ErrorMessage,
 	}
+	TaskListNotOwnedByHostError = cadence_errors.TaskListNotOwnedByHostError{
+		OwnedByIdentity: HostName,
+		MyIdentity:      HostName2,
+		TasklistName:    TaskListName,
+	}
+	NamespaceNotFoundError = types.NamespaceNotFoundError{
+		Namespace: Namespace,
+	}
 )
+
+var Errors = []error{
+	&AccessDeniedError,
+	&BadRequestError,
+	&CancellationAlreadyRequestedError,
+	&ClientVersionNotSupportedError,
+	&FeatureNotEnabledError,
+	&CurrentBranchChangedError,
+	&DomainAlreadyExistsError,
+	&DomainNotActiveError,
+	&EntityNotExistsError,
+	&WorkflowExecutionAlreadyCompletedError,
+	&EventAlreadyStartedError,
+	&InternalDataInconsistencyError,
+	&InternalServiceError,
+	&LimitExceededError,
+	&QueryFailedError,
+	&RemoteSyncMatchedError,
+	&RetryTaskV2Error,
+	&ServiceBusyError,
+	&ShardOwnershipLostError,
+	&WorkflowExecutionAlreadyStartedError,
+	&StickyWorkerUnavailableError,
+	&TaskListNotOwnedByHostError,
+	&NamespaceNotFoundError,
+}

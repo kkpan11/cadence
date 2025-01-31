@@ -24,7 +24,7 @@ package consumer
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -43,6 +43,7 @@ import (
 	"github.com/uber/cadence/common/messaging"
 	"github.com/uber/cadence/common/metrics"
 	"github.com/uber/cadence/common/types"
+	"github.com/uber/cadence/common/types/mapper/thrift"
 )
 
 const (
@@ -185,7 +186,7 @@ func (c *DefaultConsumer) processRequest(logger log.Logger, request *sqlblobs.As
 	scope := c.scope.Tagged(metrics.AsyncWFRequestTypeTag(request.GetType().String()))
 	switch request.GetType() {
 	case sqlblobs.AsyncRequestTypeStartWorkflowExecutionAsyncRequest:
-		startWFReq, err := decodeStartWorkflowRequest(request.GetPayload(), request.GetEncoding())
+		startWFReq, err := c.decodeStartWorkflowRequest(request.GetPayload(), request.GetEncoding())
 		if err != nil {
 			scope.IncCounter(metrics.AsyncWorkflowFailureCorruptMsgCount)
 			return err
@@ -199,6 +200,12 @@ func (c *DefaultConsumer) processRequest(logger log.Logger, request *sqlblobs.As
 			ctx, cancel := context.WithTimeout(c.ctx, c.startWFTimeout)
 			defer cancel()
 			resp, err = c.frontendClient.StartWorkflowExecution(ctx, startWFReq, yarpcCallOpts...)
+
+			var startedError *types.WorkflowExecutionAlreadyStartedError
+			if errors.As(err, &startedError) {
+				logger.Info("Received WorkflowExecutionAlreadyStartedError, treating it as a success", tag.WorkflowID(startWFReq.GetWorkflowID()), tag.WorkflowRunID(startedError.RunID))
+				return nil
+			}
 			return err
 		}
 
@@ -210,7 +217,7 @@ func (c *DefaultConsumer) processRequest(logger log.Logger, request *sqlblobs.As
 		scope.IncCounter(metrics.AsyncWorkflowSuccessCount)
 		logger.Info("StartWorkflowExecution succeeded", tag.WorkflowID(startWFReq.GetWorkflowID()), tag.WorkflowRunID(resp.GetRunID()))
 	case sqlblobs.AsyncRequestTypeSignalWithStartWorkflowExecutionAsyncRequest:
-		startWFReq, err := decodeSignalWithStartWorkflowRequest(request.GetPayload(), request.GetEncoding())
+		startWFReq, err := c.decodeSignalWithStartWorkflowRequest(request.GetPayload(), request.GetEncoding())
 		if err != nil {
 			c.scope.IncCounter(metrics.AsyncWorkflowFailureCorruptMsgCount)
 			return err
@@ -223,6 +230,12 @@ func (c *DefaultConsumer) processRequest(logger log.Logger, request *sqlblobs.As
 			ctx, cancel := context.WithTimeout(c.ctx, c.startWFTimeout)
 			defer cancel()
 			resp, err = c.frontendClient.SignalWithStartWorkflowExecution(ctx, startWFReq, yarpcCallOpts...)
+
+			var startedError *types.WorkflowExecutionAlreadyStartedError
+			if errors.As(err, &startedError) {
+				logger.Info("Received WorkflowExecutionAlreadyStartedError, treating it as a success", tag.WorkflowID(startWFReq.GetWorkflowID()), tag.WorkflowRunID(startedError.RunID))
+				return nil
+			}
 			return err
 		}
 
@@ -270,26 +283,30 @@ func getYARPCOptions(header *shared.Header) []yarpc.CallOption {
 	return opts
 }
 
-func decodeStartWorkflowRequest(payload []byte, encoding string) (*types.StartWorkflowExecutionRequest, error) {
-	if encoding != string(common.EncodingTypeJSON) {
+func (c *DefaultConsumer) decodeStartWorkflowRequest(payload []byte, encoding string) (*types.StartWorkflowExecutionRequest, error) {
+	if encoding != string(common.EncodingTypeThriftRW) {
 		return nil, &UnsupportedEncoding{EncodingType: encoding}
 	}
 
-	var startRequest types.StartWorkflowExecutionAsyncRequest
-	if err := json.Unmarshal(payload, &startRequest); err != nil {
+	var thriftObj shared.StartWorkflowExecutionAsyncRequest
+	if err := c.msgDecoder.Decode(payload, &thriftObj); err != nil {
 		return nil, err
 	}
+
+	startRequest := thrift.ToStartWorkflowExecutionAsyncRequest(&thriftObj)
 	return startRequest.StartWorkflowExecutionRequest, nil
 }
 
-func decodeSignalWithStartWorkflowRequest(payload []byte, encoding string) (*types.SignalWithStartWorkflowExecutionRequest, error) {
-	if encoding != string(common.EncodingTypeJSON) {
+func (c *DefaultConsumer) decodeSignalWithStartWorkflowRequest(payload []byte, encoding string) (*types.SignalWithStartWorkflowExecutionRequest, error) {
+	if encoding != string(common.EncodingTypeThriftRW) {
 		return nil, &UnsupportedEncoding{EncodingType: encoding}
 	}
 
-	var startRequest types.SignalWithStartWorkflowExecutionAsyncRequest
-	if err := json.Unmarshal(payload, &startRequest); err != nil {
+	var thriftObj shared.SignalWithStartWorkflowExecutionAsyncRequest
+	if err := c.msgDecoder.Decode(payload, &thriftObj); err != nil {
 		return nil, err
 	}
-	return startRequest.SignalWithStartWorkflowExecutionRequest, nil
+
+	signalWithStartRequest := thrift.ToSignalWithStartWorkflowExecutionAsyncRequest(&thriftObj)
+	return signalWithStartRequest.SignalWithStartWorkflowExecutionRequest, nil
 }

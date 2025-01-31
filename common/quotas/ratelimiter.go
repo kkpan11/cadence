@@ -22,18 +22,24 @@ package quotas
 
 import (
 	"context"
-	"math"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"github.com/uber/cadence/common/clock"
 )
 
 const (
 	_defaultRPSTTL = 60 * time.Second
 	_burstSize     = 1
 )
+
+// TODO: this is likely major overkill, especially now that clock.Ratelimiter exists.
+// Just mutate the limit, it's concurrency-safe and efficient.  And consider a background
+// debouncer only if that proves too costly (stevenl: I suspect it will not be).
 
 // RateLimiter is a wrapper around the golang rate limiter handling dynamic
 // configuration updates of the max dispatch per second. This has comparable
@@ -52,8 +58,9 @@ type RateLimiter struct {
 }
 
 // NewSimpleRateLimiter returns a new rate limiter backed by the golang rate
-// limiter
-func NewSimpleRateLimiter(rps int) *RateLimiter {
+// limiter.  This is currently only used in tests.
+func NewSimpleRateLimiter(t *testing.T, rps int) *RateLimiter {
+	t.Helper() // ensure a T has been passed
 	initialRps := float64(rps)
 	return NewRateLimiter(&initialRps, _defaultRPSTTL, _burstSize)
 }
@@ -83,31 +90,31 @@ func (rl *RateLimiter) UpdateMaxDispatch(maxDispatchPerSecond *float64) {
 
 // Wait waits up till deadline for a rate limit token
 func (rl *RateLimiter) Wait(ctx context.Context) error {
-	limiter := rl.goRateLimiter.Load().(*rate.Limiter)
+	limiter := rl.goRateLimiter.Load().(clock.Ratelimiter)
 	return limiter.Wait(ctx)
 }
 
 // Reserve reserves a rate limit token
-func (rl *RateLimiter) Reserve() *rate.Reservation {
-	limiter := rl.goRateLimiter.Load().(*rate.Limiter)
+func (rl *RateLimiter) Reserve() clock.Reservation {
+	limiter := rl.goRateLimiter.Load().(clock.Ratelimiter)
 	return limiter.Reserve()
 }
 
 // Allow immediately returns with true or false indicating if a rate limit
 // token is available or not
 func (rl *RateLimiter) Allow() bool {
-	limiter := rl.goRateLimiter.Load().(*rate.Limiter)
+	limiter := rl.goRateLimiter.Load().(clock.Ratelimiter)
 	return limiter.Allow()
 }
 
 // Limit returns the current rate per second limit for this ratelimiter
-func (rl *RateLimiter) Limit() float64 {
+func (rl *RateLimiter) Limit() rate.Limit {
 	rl.RLock()
 	defer rl.RUnlock()
 	if rl.maxDispatchPerSecond != nil {
-		return *rl.maxDispatchPerSecond
+		return rate.Limit(*rl.maxDispatchPerSecond)
 	}
-	return math.MaxFloat64
+	return rate.Inf
 }
 
 func (rl *RateLimiter) storeLimiter(maxDispatchPerSecond *float64) {
@@ -116,7 +123,7 @@ func (rl *RateLimiter) storeLimiter(maxDispatchPerSecond *float64) {
 	if *maxDispatchPerSecond != 0 && burst <= rl.minBurst {
 		burst = rl.minBurst
 	}
-	limiter := rate.NewLimiter(rate.Limit(*maxDispatchPerSecond), burst)
+	limiter := clock.NewRatelimiter(rate.Limit(*maxDispatchPerSecond), burst)
 	rl.goRateLimiter.Store(limiter)
 }
 

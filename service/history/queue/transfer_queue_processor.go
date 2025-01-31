@@ -72,11 +72,12 @@ type transferQueueProcessor struct {
 	shutdownChan chan struct{}
 	shutdownWG   sync.WaitGroup
 
-	ackLevel               int64
-	taskAllocator          TaskAllocator
-	activeTaskExecutor     task.Executor
-	activeQueueProcessor   *transferQueueProcessorBase
-	standbyQueueProcessors map[string]*transferQueueProcessorBase
+	ackLevel                int64
+	taskAllocator           TaskAllocator
+	activeTaskExecutor      task.Executor
+	activeQueueProcessor    *transferQueueProcessorBase
+	standbyQueueProcessors  map[string]*transferQueueProcessorBase
+	failoverQueueProcessors []*transferQueueProcessorBase
 }
 
 // NewTransferQueueProcessor creates a new transfer QueueProcessor
@@ -84,7 +85,7 @@ func NewTransferQueueProcessor(
 	shard shard.Context,
 	historyEngine engine.Engine,
 	taskProcessor task.Processor,
-	executionCache *execution.Cache,
+	executionCache execution.Cache,
 	workflowResetter reset.WorkflowResetter,
 	archivalClient archiver.Client,
 	executionCheck invariant.Invariant,
@@ -107,7 +108,6 @@ func NewTransferQueueProcessor(
 
 	activeQueueProcessor := newTransferQueueActiveProcessor(
 		shard,
-		historyEngine,
 		taskProcessor,
 		taskAllocator,
 		activeTaskExecutor,
@@ -138,7 +138,6 @@ func NewTransferQueueProcessor(
 		standbyQueueProcessors[clusterName] = newTransferQueueStandbyProcessor(
 			clusterName,
 			shard,
-			historyEngine,
 			taskProcessor,
 			taskAllocator,
 			standbyTaskExecutor,
@@ -202,6 +201,13 @@ func (t *transferQueueProcessor) Stop() {
 	t.activeQueueProcessor.Stop()
 	for _, standbyQueueProcessor := range t.standbyQueueProcessors {
 		standbyQueueProcessor.Stop()
+	}
+
+	if len(t.failoverQueueProcessors) > 0 {
+		t.logger.Info("Shutting down failover transfer queues", tag.Counter(len(t.failoverQueueProcessors)))
+		for _, failoverQueueProcessor := range t.failoverQueueProcessors {
+			failoverQueueProcessor.Stop()
+		}
 	}
 }
 
@@ -267,7 +273,6 @@ func (t *transferQueueProcessor) FailoverDomain(domainIDs map[string]struct{}) {
 
 	updateShardAckLevel, failoverQueueProcessor := newTransferQueueFailoverProcessor(
 		t.shard,
-		t.historyEngine,
 		t.taskProcessor,
 		t.taskAllocator,
 		t.activeTaskExecutor,
@@ -284,6 +289,12 @@ func (t *transferQueueProcessor) FailoverDomain(domainIDs map[string]struct{}) {
 	if err != nil {
 		t.logger.Error("Error update shard ack level", tag.Error(err))
 	}
+
+	// Failover queue processors are started on the fly when domains are failed over.
+	// Failover queue processors will be stopped when the transfer queue instance is stopped (due to restart or shard movement).
+	// This means the failover queue processor might not finish its job.
+	// There is no mechanism to re-start ongoing failover queue processors in the new shard owner.
+	t.failoverQueueProcessors = append(t.failoverQueueProcessors, failoverQueueProcessor)
 	failoverQueueProcessor.Start()
 }
 
@@ -349,6 +360,14 @@ func (t *transferQueueProcessor) completeTransferLoop() {
 	completeTimer := time.NewTimer(t.config.TransferProcessorCompleteTransferInterval())
 	defer completeTimer.Stop()
 
+	// Create a retryTimer once, and reset it as needed
+	retryTimer := time.NewTimer(0)
+	defer retryTimer.Stop()
+	// Stop it immediately because we don't want it to fire initially
+	if !retryTimer.Stop() {
+		<-retryTimer.C
+	}
+
 	for {
 		select {
 		case <-t.shutdownChan:
@@ -362,7 +381,8 @@ func (t *transferQueueProcessor) completeTransferLoop() {
 				}
 
 				t.logger.Error("Failed to complete transfer task", tag.Error(err))
-				if err == shard.ErrShardClosed {
+				var errShardClosed *shard.ErrShardClosed
+				if errors.As(err, &errShardClosed) {
 					// shard closed, trigger shutdown and bail out
 					if !t.shard.GetConfig().QueueProcessorEnableGracefulSyncShutdown() {
 						go t.Stop()
@@ -372,12 +392,15 @@ func (t *transferQueueProcessor) completeTransferLoop() {
 					t.Stop()
 					return
 				}
-
+				// Reset the retryTimer for the delay between attempts
+				// TODO: the first retry has 0 backoff, revisit it to see if it's expected
+				retryDuration := time.Duration(attempt*100) * time.Millisecond
+				retryTimer.Reset(retryDuration)
 				select {
 				case <-t.shutdownChan:
 					t.drain()
 					return
-				case <-time.After(time.Duration(attempt*100) * time.Millisecond):
+				case <-retryTimer.C:
 					// do nothing. retry loop will continue
 				}
 			}
@@ -452,7 +475,6 @@ func (t *transferQueueProcessor) completeTransfer() error {
 
 func newTransferQueueActiveProcessor(
 	shard shard.Context,
-	historyEngine engine.Engine,
 	taskProcessor task.Processor,
 	taskAllocator TaskAllocator,
 	taskExecutor task.Executor,
@@ -513,7 +535,6 @@ func newTransferQueueActiveProcessor(
 func newTransferQueueStandbyProcessor(
 	clusterName string,
 	shard shard.Context,
-	historyEngine engine.Engine,
 	taskProcessor task.Processor,
 	taskAllocator TaskAllocator,
 	taskExecutor task.Executor,
@@ -590,7 +611,6 @@ func newTransferQueueStandbyProcessor(
 
 func newTransferQueueFailoverProcessor(
 	shardContext shard.Context,
-	historyEngine engine.Engine,
 	taskProcessor task.Processor,
 	taskAllocator TaskAllocator,
 	taskExecutor task.Executor,

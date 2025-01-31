@@ -25,11 +25,14 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	fuzz "github.com/google/gofuzz"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/uber/cadence/.gen/go/shared"
 	"github.com/uber/cadence/common"
+	cadence_errors "github.com/uber/cadence/common/errors"
 	"github.com/uber/cadence/common/types"
+	"github.com/uber/cadence/common/types/mapper/testutils"
 	"github.com/uber/cadence/common/types/testdata"
 )
 
@@ -469,6 +472,7 @@ func TestCancelExternalWorkflowExecutionFailedCauseConversion(t *testing.T) {
 	testCases := []*types.CancelExternalWorkflowExecutionFailedCause{
 		nil,
 		types.CancelExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution.Ptr(),
+		types.CancelExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted.Ptr(),
 	}
 
 	for _, original := range testCases {
@@ -1098,7 +1102,10 @@ func TestDescribeTaskListResponseConversion(t *testing.T) {
 	for _, original := range testCases {
 		thriftObj := FromDescribeTaskListResponse(original)
 		roundTripObj := ToDescribeTaskListResponse(thriftObj)
-		assert.Equal(t, original, roundTripObj)
+		opt := cmpopts.IgnoreFields(types.DescribeTaskListResponse{}, "PartitionConfig")
+		if diff := cmp.Diff(original, roundTripObj, opt); diff != "" {
+			t.Fatalf("Mismatch (-want +got):\n%s", diff)
+		}
 	}
 }
 
@@ -1126,6 +1133,34 @@ func TestDescribeWorkflowExecutionResponseConversion(t *testing.T) {
 	for _, original := range testCases {
 		thriftObj := FromDescribeWorkflowExecutionResponse(original)
 		roundTripObj := ToDescribeWorkflowExecutionResponse(thriftObj)
+		assert.Equal(t, original, roundTripObj)
+	}
+}
+
+func TestDiagnoseWorkflowExecutionRequestConversion(t *testing.T) {
+	testCases := []*types.DiagnoseWorkflowExecutionRequest{
+		nil,
+		{},
+		&testdata.DiagnoseWorkflowExecutionRequest,
+	}
+
+	for _, original := range testCases {
+		thriftObj := FromDiagnoseWorkflowExecutionRequest(original)
+		roundTripObj := ToDiagnoseWorkflowExecutionRequest(thriftObj)
+		assert.Equal(t, original, roundTripObj)
+	}
+}
+
+func TestDiagnoseWorkflowExecutionResponseConversion(t *testing.T) {
+	testCases := []*types.DiagnoseWorkflowExecutionResponse{
+		nil,
+		{},
+		&testdata.DiagnoseWorkflowExecutionResponse,
+	}
+
+	for _, original := range testCases {
+		thriftObj := FromDiagnoseWorkflowExecutionResponse(original)
+		roundTripObj := ToDiagnoseWorkflowExecutionResponse(thriftObj)
 		assert.Equal(t, original, roundTripObj)
 	}
 }
@@ -1743,7 +1778,10 @@ func TestDescribeTaskListResponseMapConversion(t *testing.T) {
 	for _, original := range testCases {
 		thriftObj := FromDescribeTaskListResponseMap(original)
 		roundTripObj := ToDescribeTaskListResponseMap(thriftObj)
-		assert.Equal(t, original, roundTripObj)
+		opt := cmpopts.IgnoreFields(types.DescribeTaskListResponse{}, "PartitionConfig")
+		if diff := cmp.Diff(original, roundTripObj, opt); diff != "" {
+			t.Fatalf("Mismatch (-want +got):\n%s", diff)
+		}
 	}
 }
 
@@ -2596,6 +2634,7 @@ func TestSignalExternalWorkflowExecutionFailedCauseConversion(t *testing.T) {
 	testCases := []*types.SignalExternalWorkflowExecutionFailedCause{
 		nil,
 		types.SignalExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution.Ptr(),
+		types.SignalExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted.Ptr(),
 	}
 
 	for _, original := range testCases {
@@ -3309,4 +3348,79 @@ func TestStickyWorkerUnavailableErrorConversion(t *testing.T) {
 		roundTripObj := ToStickyWorkerUnavailableError(thriftObj)
 		assert.Equal(t, original, roundTripObj)
 	}
+}
+
+func TestFromTaskListNotOwnedByHostError(t *testing.T) {
+	testCases := []*cadence_errors.TaskListNotOwnedByHostError{
+		nil,
+		&testdata.TaskListNotOwnedByHostError,
+	}
+
+	for _, original := range testCases {
+		thriftObj := FromTaskListNotOwnedByHostError(original)
+		roundTripObj := ToTaskListNotOwnedByHostError(thriftObj)
+		assert.Equal(t, original, roundTripObj)
+	}
+}
+
+func TestAny(t *testing.T) {
+	t.Run("sanity check", func(t *testing.T) {
+		// test the main fields are mapped correctly
+		internal := types.Any{
+			ValueType: "testing",
+			Value:     []byte(`test`),
+		}
+		rpc := shared.Any{
+			ValueType: common.StringPtr("testing"),
+			Value:     []byte(`test`),
+		}
+		assert.Equal(t, &rpc, FromAny(&internal))
+		assert.Equal(t, &internal, ToAny(&rpc))
+	})
+	t.Run("round trip nils", func(t *testing.T) {
+		// somewhat annoying in fuzzing and there are few possibilities, so tested separately
+		assert.Nil(t, FromAny(ToAny(nil)), "nil thrift -> internal -> thrift => should result in nil")
+		assert.Nil(t, ToAny(FromAny(nil)), "nil internal -> thrift -> internal => should result in nil")
+	})
+
+	t.Run("round trip from internal", func(t *testing.T) {
+		// fuzz test to check round trip data works as it should when starting from internal types
+		testutils.EnsureFuzzCoverage(t, []string{
+			"empty data", "filled data",
+		}, func(t *testing.T, f *fuzz.Fuzzer) string {
+			var orig types.Any
+			f.Fuzz(&orig)
+			out := ToAny(FromAny(&orig))
+			assert.Equal(t, &orig, out, "did not survive round-tripping")
+
+			// report what branch of behavior was executed so we can ensure stable coverage
+			if len(orig.Value) == 0 {
+				return "empty data" // ignoring nil vs empty difference
+			}
+			return "filled data"
+		})
+	})
+	t.Run("round trip from thrift", func(t *testing.T) {
+		// fuzz test to check round trip data works as it should
+		testutils.EnsureFuzzCoverage(t, []string{
+			"nil id", "empty data", "filled data",
+		}, func(t *testing.T, f *fuzz.Fuzzer) string {
+			var orig shared.Any
+			f.Fuzz(&orig)
+			out := FromAny(ToAny(&orig))
+
+			if orig.ValueType == nil {
+				// internal type does not support nil strings, so it will be transformed to an empty string.
+				assert.Equal(t, "", *out.ValueType, "empty value type did not survive round-tripping")
+				assert.Equal(t, orig.Value, out.Value, "value did not survive round-tripping")
+				return "nil id"
+			}
+			// non-nil ValueType can check all fields
+			assert.Equal(t, &orig, out, "did not survive round-tripping")
+			if len(orig.Value) == 0 {
+				return "empty data" // ignoring nil vs empty difference
+			}
+			return "filled data"
+		})
+	})
 }

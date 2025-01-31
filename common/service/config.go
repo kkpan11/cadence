@@ -20,7 +20,10 @@
 
 package service
 
-import "github.com/uber/cadence/common/dynamicconfig"
+import (
+	"github.com/uber/cadence/common/backoff"
+	"github.com/uber/cadence/common/dynamicconfig"
+)
 
 type (
 	// Config is a subset of the service dynamic config for single service
@@ -29,14 +32,12 @@ type (
 		PersistenceGlobalMaxQPS dynamicconfig.IntPropertyFn
 		ThrottledLoggerMaxRPS   dynamicconfig.IntPropertyFn
 
-		// EnableReadVisibilityFromES is the read mode of visibility
-		EnableReadVisibilityFromES dynamicconfig.BoolPropertyFnWithDomainFilter
-		// AdvancedVisibilityWritingMode is the write mode of visibility
-		AdvancedVisibilityWritingMode dynamicconfig.StringPropertyFn
-		// EnableReadVisibilityFromPinot is the read mode of visibility
-		EnableReadVisibilityFromPinot dynamicconfig.BoolPropertyFnWithDomainFilter
+		// WriteVisibilityStoreName is the write mode of visibility
+		WriteVisibilityStoreName dynamicconfig.StringPropertyFn
 		// EnableLogCustomerQueryParameter is to enable log customer parameters
 		EnableLogCustomerQueryParameter dynamicconfig.BoolPropertyFnWithDomainFilter
+		// ReadVisibilityStoreName is the read store for visibility
+		ReadVisibilityStoreName dynamicconfig.StringPropertyFnWithDomainFilter
 
 		// configs for db visibility
 		EnableDBVisibilitySampling                  dynamicconfig.BoolPropertyFn                `yaml:"-" json:"-"`
@@ -50,5 +51,7 @@ type (
 		ValidSearchAttributes  dynamicconfig.MapPropertyFn `yaml:"-" json:"-"`
 		// deprecated: never read from, all ES reads and writes erroneously use PersistenceMaxQPS
 		ESVisibilityListMaxQPS dynamicconfig.IntPropertyFnWithDomainFilter `yaml:"-" json:"-"`
+
+		IsErrorRetryableFunction backoff.IsRetryable
 	}
 )

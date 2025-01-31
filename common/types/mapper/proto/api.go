@@ -332,6 +332,8 @@ func FromCancelExternalWorkflowExecutionFailedCause(t *types.CancelExternalWorkf
 	switch *t {
 	case types.CancelExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution:
 		return apiv1.CancelExternalWorkflowExecutionFailedCause_CANCEL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_UNKNOWN_EXTERNAL_WORKFLOW_EXECUTION
+	case types.CancelExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted:
+		return apiv1.CancelExternalWorkflowExecutionFailedCause_CANCEL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_COMPLETED
 	}
 	panic("unexpected enum value")
 }
@@ -342,6 +344,8 @@ func ToCancelExternalWorkflowExecutionFailedCause(t apiv1.CancelExternalWorkflow
 		return nil
 	case apiv1.CancelExternalWorkflowExecutionFailedCause_CANCEL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_UNKNOWN_EXTERNAL_WORKFLOW_EXECUTION:
 		return types.CancelExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution.Ptr()
+	case apiv1.CancelExternalWorkflowExecutionFailedCause_CANCEL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_COMPLETED:
+		return types.CancelExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted.Ptr()
 	}
 	panic("unexpected enum value")
 }
@@ -911,6 +915,7 @@ func FromDecisionTaskFailedEventAttributes(t *types.DecisionTaskFailedEventAttri
 		NewRunId:         t.NewRunID,
 		ForkEventVersion: t.ForkEventVersion,
 		BinaryChecksum:   t.BinaryChecksum,
+		RequestId:        t.RequestID,
 	}
 }
 
@@ -929,6 +934,7 @@ func ToDecisionTaskFailedEventAttributes(t *apiv1.DecisionTaskFailedEventAttribu
 		NewRunID:         t.NewRunId,
 		ForkEventVersion: t.ForkEventVersion,
 		BinaryChecksum:   t.BinaryChecksum,
+		RequestID:        t.RequestId,
 	}
 }
 
@@ -989,6 +995,7 @@ func FromDecisionTaskTimedOutEventAttributes(t *types.DecisionTaskTimedOutEventA
 		ForkEventVersion: t.ForkEventVersion,
 		Reason:           t.Reason,
 		Cause:            FromDecisionTaskTimedOutCause(t.Cause),
+		RequestId:        t.RequestID,
 	}
 }
 
@@ -1005,6 +1012,7 @@ func ToDecisionTaskTimedOutEventAttributes(t *apiv1.DecisionTaskTimedOutEventAtt
 		ForkEventVersion: t.ForkEventVersion,
 		Reason:           t.Reason,
 		Cause:            ToDecisionTaskTimedOutCause(t.Cause),
+		RequestID:        t.RequestId,
 	}
 }
 
@@ -1078,6 +1086,7 @@ func FromDescribeDomainResponseDomain(t *types.DescribeDomainResponse) *apiv1.Do
 		domain.HistoryArchivalUri = config.HistoryArchivalURI
 		domain.VisibilityArchivalStatus = FromArchivalStatus(config.VisibilityArchivalStatus)
 		domain.VisibilityArchivalUri = config.VisibilityArchivalURI
+		domain.AsyncWorkflowConfig = FromDomainAsyncWorkflowConfiguraton(config.AsyncWorkflowConfig)
 	}
 	if repl := t.ReplicationConfiguration; repl != nil {
 		domain.ActiveClusterName = repl.ActiveClusterName
@@ -1120,6 +1129,7 @@ func ToDescribeDomainResponseDomain(t *apiv1.Domain) *types.DescribeDomainRespon
 			VisibilityArchivalStatus:               ToArchivalStatus(t.VisibilityArchivalStatus),
 			VisibilityArchivalURI:                  t.VisibilityArchivalUri,
 			IsolationGroups:                        ToIsolationGroupConfig(t.IsolationGroups),
+			AsyncWorkflowConfig:                    ToDomainAsyncWorkflowConfiguraton(t.AsyncWorkflowConfig),
 		},
 		ReplicationConfiguration: &types.DomainReplicationConfiguration{
 			ActiveClusterName: t.ActiveClusterName,
@@ -1194,8 +1204,9 @@ func FromDescribeTaskListResponse(t *types.DescribeTaskListResponse) *apiv1.Desc
 		return nil
 	}
 	return &apiv1.DescribeTaskListResponse{
-		Pollers:        FromPollerInfoArray(t.Pollers),
-		TaskListStatus: FromTaskListStatus(t.TaskListStatus),
+		Pollers:         FromPollerInfoArray(t.Pollers),
+		TaskListStatus:  FromTaskListStatus(t.TaskListStatus),
+		PartitionConfig: FromAPITaskListPartitionConfig(t.PartitionConfig),
 	}
 }
 
@@ -1204,8 +1215,9 @@ func ToDescribeTaskListResponse(t *apiv1.DescribeTaskListResponse) *types.Descri
 		return nil
 	}
 	return &types.DescribeTaskListResponse{
-		Pollers:        ToPollerInfoArray(t.Pollers),
-		TaskListStatus: ToTaskListStatus(t.TaskListStatus),
+		Pollers:         ToPollerInfoArray(t.Pollers),
+		TaskListStatus:  ToTaskListStatus(t.TaskListStatus),
+		PartitionConfig: ToAPITaskListPartitionConfig(t.PartitionConfig),
 	}
 }
 
@@ -1252,6 +1264,47 @@ func ToDescribeWorkflowExecutionResponse(t *apiv1.DescribeWorkflowExecutionRespo
 		PendingActivities:      ToPendingActivityInfoArray(t.PendingActivities),
 		PendingChildren:        ToPendingChildExecutionInfoArray(t.PendingChildren),
 		PendingDecision:        ToPendingDecisionInfo(t.PendingDecision),
+	}
+}
+
+func FromDiagnoseWorkflowExecutionRequest(t *types.DiagnoseWorkflowExecutionRequest) *apiv1.DiagnoseWorkflowExecutionRequest {
+	if t == nil {
+		return nil
+	}
+	return &apiv1.DiagnoseWorkflowExecutionRequest{
+		Domain:            t.GetDomain(),
+		WorkflowExecution: FromWorkflowExecution(t.GetWorkflowExecution()),
+	}
+}
+
+func ToDiagnoseWorkflowExecutionRequest(t *apiv1.DiagnoseWorkflowExecutionRequest) *types.DiagnoseWorkflowExecutionRequest {
+	if t == nil {
+		return nil
+	}
+	return &types.DiagnoseWorkflowExecutionRequest{
+		Domain:            t.GetDomain(),
+		WorkflowExecution: ToWorkflowExecution(t.GetWorkflowExecution()),
+		Identity:          t.Identity,
+	}
+}
+
+func FromDiagnoseWorkflowExecutionResponse(t *types.DiagnoseWorkflowExecutionResponse) *apiv1.DiagnoseWorkflowExecutionResponse {
+	if t == nil {
+		return nil
+	}
+	return &apiv1.DiagnoseWorkflowExecutionResponse{
+		Domain:                      t.GetDomain(),
+		DiagnosticWorkflowExecution: FromWorkflowExecution(t.GetDiagnosticWorkflowExecution()),
+	}
+}
+
+func ToDiagnoseWorkflowExecutionResponse(t *apiv1.DiagnoseWorkflowExecutionResponse) *types.DiagnoseWorkflowExecutionResponse {
+	if t == nil {
+		return nil
+	}
+	return &types.DiagnoseWorkflowExecutionResponse{
+		Domain:                      t.GetDomain(),
+		DiagnosticWorkflowExecution: ToWorkflowExecution(t.GetDiagnosticWorkflowExecution()),
 	}
 }
 
@@ -1944,6 +1997,7 @@ func FromPendingActivityInfo(t *types.PendingActivityInfo) *apiv1.PendingActivit
 		LastFailure:           FromFailure(t.LastFailureReason, t.LastFailureDetails),
 		LastWorkerIdentity:    t.LastWorkerIdentity,
 		StartedWorkerIdentity: t.StartedWorkerIdentity,
+		ScheduleId:            t.ScheduleID,
 	}
 }
 
@@ -1966,6 +2020,7 @@ func ToPendingActivityInfo(t *apiv1.PendingActivityInfo) *types.PendingActivityI
 		LastFailureDetails:     ToFailureDetails(t.LastFailure),
 		LastWorkerIdentity:     t.LastWorkerIdentity,
 		StartedWorkerIdentity:  t.StartedWorkerIdentity,
+		ScheduleID:             t.ScheduleId,
 	}
 }
 
@@ -2035,6 +2090,7 @@ func FromPendingDecisionInfo(t *types.PendingDecisionInfo) *apiv1.PendingDecisio
 		StartedTime:           unixNanoToTime(t.StartedTimestamp),
 		Attempt:               int32(t.Attempt),
 		OriginalScheduledTime: unixNanoToTime(t.OriginalScheduledTimestamp),
+		ScheduleId:            t.ScheduleID,
 	}
 }
 
@@ -2048,6 +2104,7 @@ func ToPendingDecisionInfo(t *apiv1.PendingDecisionInfo) *types.PendingDecisionI
 		StartedTimestamp:           timeToUnixNano(t.StartedTime),
 		Attempt:                    int64(t.Attempt),
 		OriginalScheduledTimestamp: timeToUnixNano(t.OriginalScheduledTime),
+		ScheduleID:                 t.ScheduleId,
 	}
 }
 
@@ -2121,6 +2178,7 @@ func FromPollForActivityTaskResponse(t *types.PollForActivityTaskResponse) *apiv
 		WorkflowType:               FromWorkflowType(t.WorkflowType),
 		WorkflowDomain:             t.WorkflowDomain,
 		Header:                     FromHeader(t.Header),
+		AutoConfigHint:             FromAutoConfigHint(t.AutoConfigHint),
 	}
 }
 
@@ -2145,6 +2203,7 @@ func ToPollForActivityTaskResponse(t *apiv1.PollForActivityTaskResponse) *types.
 		WorkflowType:                    ToWorkflowType(t.WorkflowType),
 		WorkflowDomain:                  t.WorkflowDomain,
 		Header:                          ToHeader(t.Header),
+		AutoConfigHint:                  ToAutoConfigHint(t.AutoConfigHint),
 	}
 }
 
@@ -2193,6 +2252,7 @@ func FromPollForDecisionTaskResponse(t *types.PollForDecisionTaskResponse) *apiv
 		Queries:                   FromWorkflowQueryMap(t.Queries),
 		NextEventId:               t.NextEventID,
 		TotalHistoryBytes:         t.TotalHistoryBytes,
+		AutoConfigHint:            FromAutoConfigHint(t.AutoConfigHint),
 	}
 }
 
@@ -2217,6 +2277,7 @@ func ToPollForDecisionTaskResponse(t *apiv1.PollForDecisionTaskResponse) *types.
 		Queries:                   ToWorkflowQueryMap(t.Queries),
 		NextEventID:               t.NextEventId,
 		TotalHistoryBytes:         t.TotalHistoryBytes,
+		AutoConfigHint:            ToAutoConfigHint(t.AutoConfigHint),
 	}
 }
 
@@ -3277,6 +3338,8 @@ func FromSignalExternalWorkflowExecutionFailedCause(t *types.SignalExternalWorkf
 	switch *t {
 	case types.SignalExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution:
 		return apiv1.SignalExternalWorkflowExecutionFailedCause_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_UNKNOWN_EXTERNAL_WORKFLOW_EXECUTION
+	case types.SignalExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted:
+		return apiv1.SignalExternalWorkflowExecutionFailedCause_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_COMPLETED
 	}
 	panic("unexpected enum value")
 }
@@ -3287,6 +3350,8 @@ func ToSignalExternalWorkflowExecutionFailedCause(t apiv1.SignalExternalWorkflow
 		return nil
 	case apiv1.SignalExternalWorkflowExecutionFailedCause_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_UNKNOWN_EXTERNAL_WORKFLOW_EXECUTION:
 		return types.SignalExternalWorkflowExecutionFailedCauseUnknownExternalWorkflowExecution.Ptr()
+	case apiv1.SignalExternalWorkflowExecutionFailedCause_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_FAILED_CAUSE_WORKFLOW_ALREADY_COMPLETED:
+		return types.SignalExternalWorkflowExecutionFailedCauseWorkflowAlreadyCompleted.Ptr()
 	}
 	panic("unexpected enum value")
 }
@@ -3372,6 +3437,7 @@ func FromSignalWithStartWorkflowExecutionRequest(t *types.SignalWithStartWorkflo
 			Header:                       FromHeader(t.Header),
 			DelayStart:                   secondsToDuration(t.DelayStartSeconds),
 			JitterStart:                  secondsToDuration(t.JitterStartSeconds),
+			FirstRunAt:                   unixNanoToTime(t.FirstRunAtTimestamp),
 		},
 		SignalName:  t.SignalName,
 		SignalInput: FromPayload(t.SignalInput),
@@ -3404,6 +3470,7 @@ func ToSignalWithStartWorkflowExecutionRequest(t *apiv1.SignalWithStartWorkflowE
 		Header:                              ToHeader(t.StartRequest.Header),
 		DelayStartSeconds:                   durationToSeconds(t.StartRequest.DelayStart),
 		JitterStartSeconds:                  durationToSeconds(t.StartRequest.JitterStart),
+		FirstRunAtTimestamp:                 timeToUnixNano(t.StartRequest.FirstRunAt),
 	}
 }
 
@@ -3554,6 +3621,7 @@ func FromStartChildWorkflowExecutionInitiatedEventAttributes(t *types.StartChild
 		SearchAttributes:             FromSearchAttributes(t.SearchAttributes),
 		DelayStart:                   secondsToDuration(t.DelayStartSeconds),
 		JitterStart:                  secondsToDuration(t.JitterStartSeconds),
+		FirstRunAt:                   unixNanoToTime(t.FirstRunAtTimestamp),
 	}
 }
 
@@ -3580,6 +3648,7 @@ func ToStartChildWorkflowExecutionInitiatedEventAttributes(t *apiv1.StartChildWo
 		SearchAttributes:                    ToSearchAttributes(t.SearchAttributes),
 		DelayStartSeconds:                   durationToSeconds(t.DelayStart),
 		JitterStartSeconds:                  durationToSeconds(t.JitterStart),
+		FirstRunAtTimestamp:                 timeToUnixNano(t.FirstRunAt),
 	}
 }
 
@@ -3729,6 +3798,7 @@ func FromStartWorkflowExecutionRequest(t *types.StartWorkflowExecutionRequest) *
 		Header:                       FromHeader(t.Header),
 		DelayStart:                   secondsToDuration(t.DelayStartSeconds),
 		JitterStart:                  secondsToDuration(t.JitterStartSeconds),
+		FirstRunAt:                   unixNanoToTime(t.FirstRunAtTimeStamp),
 	}
 }
 
@@ -3754,6 +3824,7 @@ func ToStartWorkflowExecutionRequest(t *apiv1.StartWorkflowExecutionRequest) *ty
 		Header:                              ToHeader(t.Header),
 		DelayStartSeconds:                   durationToSeconds(t.DelayStart),
 		JitterStartSeconds:                  durationToSeconds(t.JitterStart),
+		FirstRunAtTimeStamp:                 timeToUnixNano(t.FirstRunAt),
 	}
 }
 
@@ -3939,11 +4010,13 @@ func FromTaskListStatus(t *types.TaskListStatus) *apiv1.TaskListStatus {
 		return nil
 	}
 	return &apiv1.TaskListStatus{
-		BacklogCountHint: t.BacklogCountHint,
-		ReadLevel:        t.ReadLevel,
-		AckLevel:         t.AckLevel,
-		RatePerSecond:    t.RatePerSecond,
-		TaskIdBlock:      FromTaskIDBlock(t.TaskIDBlock),
+		BacklogCountHint:      t.BacklogCountHint,
+		ReadLevel:             t.ReadLevel,
+		AckLevel:              t.AckLevel,
+		RatePerSecond:         t.RatePerSecond,
+		TaskIdBlock:           FromTaskIDBlock(t.TaskIDBlock),
+		IsolationGroupMetrics: FromIsolationGroupMetricsMap(t.IsolationGroupMetrics),
+		NewTasksPerSecond:     t.NewTasksPerSecond,
 	}
 }
 
@@ -3952,11 +4025,27 @@ func ToTaskListStatus(t *apiv1.TaskListStatus) *types.TaskListStatus {
 		return nil
 	}
 	return &types.TaskListStatus{
-		BacklogCountHint: t.BacklogCountHint,
-		ReadLevel:        t.ReadLevel,
-		AckLevel:         t.AckLevel,
-		RatePerSecond:    t.RatePerSecond,
-		TaskIDBlock:      ToTaskIDBlock(t.TaskIdBlock),
+		BacklogCountHint:      t.BacklogCountHint,
+		ReadLevel:             t.ReadLevel,
+		AckLevel:              t.AckLevel,
+		RatePerSecond:         t.RatePerSecond,
+		TaskIDBlock:           ToTaskIDBlock(t.TaskIdBlock),
+		IsolationGroupMetrics: ToIsolationGroupMetricsMap(t.IsolationGroupMetrics),
+		NewTasksPerSecond:     t.NewTasksPerSecond,
+	}
+}
+
+func FromIsolationGroupMetrics(t *types.IsolationGroupMetrics) *apiv1.IsolationGroupMetrics {
+	return &apiv1.IsolationGroupMetrics{
+		NewTasksPerSecond: t.NewTasksPerSecond,
+		PollerCount:       t.PollerCount,
+	}
+}
+
+func ToIsolationGroupMetrics(t *apiv1.IsolationGroupMetrics) *types.IsolationGroupMetrics {
+	return &types.IsolationGroupMetrics{
+		NewTasksPerSecond: t.NewTasksPerSecond,
+		PollerCount:       t.PollerCount,
 	}
 }
 
@@ -4179,7 +4268,7 @@ func FromUpdateDomainRequest(t *types.UpdateDomainRequest) *apiv1.UpdateDomainRe
 		request.WorkflowExecutionRetentionPeriod = daysToDuration(t.WorkflowExecutionRetentionPeriodInDays)
 		fields = append(fields, DomainUpdateRetentionPeriodField)
 	}
-	//if t.EmitMetric != nil {} - DEPRECATED
+	// if t.EmitMetric != nil {} - DEPRECATED
 	if t.BadBinaries != nil {
 		request.BadBinaries = FromBadBinaries(t.BadBinaries)
 		fields = append(fields, DomainUpdateBadBinariesField)
@@ -4299,6 +4388,7 @@ func FromUpdateDomainResponse(t *types.UpdateDomainResponse) *apiv1.UpdateDomain
 		domain.HistoryArchivalUri = config.HistoryArchivalURI
 		domain.VisibilityArchivalStatus = FromArchivalStatus(config.VisibilityArchivalStatus)
 		domain.VisibilityArchivalUri = config.VisibilityArchivalURI
+		domain.AsyncWorkflowConfig = FromDomainAsyncWorkflowConfiguraton(config.AsyncWorkflowConfig)
 	}
 	if repl := t.ReplicationConfiguration; repl != nil {
 		domain.ActiveClusterName = repl.ActiveClusterName
@@ -4330,7 +4420,8 @@ func ToUpdateDomainResponse(t *apiv1.UpdateDomainResponse) *types.UpdateDomainRe
 			HistoryArchivalURI:                     t.Domain.HistoryArchivalUri,
 			VisibilityArchivalStatus:               ToArchivalStatus(t.Domain.VisibilityArchivalStatus),
 			VisibilityArchivalURI:                  t.Domain.VisibilityArchivalUri,
-			IsolationGroups:                        ToIsolationGroupConfig(t.GetDomain().GetIsolationGroups()),
+			IsolationGroups:                        ToIsolationGroupConfig(t.Domain.IsolationGroups),
+			AsyncWorkflowConfig:                    ToDomainAsyncWorkflowConfiguraton(t.Domain.AsyncWorkflowConfig),
 		},
 		ReplicationConfiguration: &types.DomainReplicationConfiguration{
 			ActiveClusterName: t.Domain.ActiveClusterName,
@@ -4472,6 +4563,7 @@ func FromWorkflowExecutionCancelRequestedEventAttributes(t *types.WorkflowExecut
 		Cause:                 t.Cause,
 		ExternalExecutionInfo: FromExternalExecutionInfoFields(t.ExternalWorkflowExecution, t.ExternalInitiatedEventID),
 		Identity:              t.Identity,
+		RequestId:             t.RequestID,
 	}
 }
 
@@ -4484,6 +4576,7 @@ func ToWorkflowExecutionCancelRequestedEventAttributes(t *apiv1.WorkflowExecutio
 		ExternalInitiatedEventID:  ToExternalInitiatedID(t.ExternalExecutionInfo),
 		ExternalWorkflowExecution: ToExternalWorkflowExecution(t.ExternalExecutionInfo),
 		Identity:                  t.Identity,
+		RequestID:                 t.RequestId,
 	}
 }
 
@@ -4801,6 +4894,7 @@ func FromWorkflowExecutionSignaledEventAttributes(t *types.WorkflowExecutionSign
 		SignalName: t.SignalName,
 		Input:      FromPayload(t.Input),
 		Identity:   t.Identity,
+		RequestId:  t.RequestID,
 	}
 }
 
@@ -4812,6 +4906,7 @@ func ToWorkflowExecutionSignaledEventAttributes(t *apiv1.WorkflowExecutionSignal
 		SignalName: t.SignalName,
 		Input:      ToPayload(t.Input),
 		Identity:   t.Identity,
+		RequestID:  t.RequestId,
 	}
 }
 
@@ -4845,6 +4940,7 @@ func FromWorkflowExecutionStartedEventAttributes(t *types.WorkflowExecutionStart
 		PrevAutoResetPoints:          FromResetPoints(t.PrevAutoResetPoints),
 		Header:                       FromHeader(t.Header),
 		PartitionConfig:              t.PartitionConfig,
+		RequestId:                    t.RequestID,
 	}
 }
 
@@ -4881,6 +4977,7 @@ func ToWorkflowExecutionStartedEventAttributes(t *apiv1.WorkflowExecutionStarted
 		PrevAutoResetPoints:                 ToResetPoints(t.PrevAutoResetPoints),
 		Header:                              ToHeader(t.Header),
 		PartitionConfig:                     t.PartitionConfig,
+		RequestID:                           t.RequestId,
 	}
 }
 
@@ -5070,7 +5167,7 @@ func FromHistoryEventArray(t []*types.HistoryEvent) []*apiv1.HistoryEvent {
 
 func ToHistoryEventArray(t []*apiv1.HistoryEvent) []*types.HistoryEvent {
 	if t == nil {
-		return nil
+		return []*types.HistoryEvent{}
 	}
 	v := make([]*types.HistoryEvent, len(t))
 	for i := range t {
@@ -5383,6 +5480,28 @@ func ToWorkflowQueryResultMap(t map[string]*apiv1.WorkflowQueryResult) map[strin
 	v := make(map[string]*types.WorkflowQueryResult, len(t))
 	for key := range t {
 		v[key] = ToWorkflowQueryResult(t[key])
+	}
+	return v
+}
+
+func FromIsolationGroupMetricsMap(t map[string]*types.IsolationGroupMetrics) map[string]*apiv1.IsolationGroupMetrics {
+	if t == nil {
+		return nil
+	}
+	v := make(map[string]*apiv1.IsolationGroupMetrics, len(t))
+	for key := range t {
+		v[key] = FromIsolationGroupMetrics(t[key])
+	}
+	return v
+}
+
+func ToIsolationGroupMetricsMap(t map[string]*apiv1.IsolationGroupMetrics) map[string]*types.IsolationGroupMetrics {
+	if t == nil {
+		return nil
+	}
+	v := make(map[string]*types.IsolationGroupMetrics, len(t))
+	for key := range t {
+		v[key] = ToIsolationGroupMetrics(t[key])
 	}
 	return v
 }
@@ -5997,4 +6116,46 @@ func ToResetStickyTaskListResponse(t *apiv1.ResetStickyTaskListResponse) *types.
 		return nil
 	}
 	return &types.ResetStickyTaskListResponse{}
+}
+
+func FromAPITaskListPartitionConfig(t *types.TaskListPartitionConfig) *apiv1.TaskListPartitionConfig {
+	if t == nil {
+		return nil
+	}
+	return &apiv1.TaskListPartitionConfig{
+		Version:            t.Version,
+		NumReadPartitions:  t.NumReadPartitions,
+		NumWritePartitions: t.NumWritePartitions,
+	}
+}
+
+func ToAPITaskListPartitionConfig(t *apiv1.TaskListPartitionConfig) *types.TaskListPartitionConfig {
+	if t == nil {
+		return nil
+	}
+	return &types.TaskListPartitionConfig{
+		Version:            t.Version,
+		NumReadPartitions:  t.NumReadPartitions,
+		NumWritePartitions: t.NumWritePartitions,
+	}
+}
+
+func FromAutoConfigHint(t *types.AutoConfigHint) *apiv1.AutoConfigHint {
+	if t == nil {
+		return nil
+	}
+	return &apiv1.AutoConfigHint{
+		PollerWaitTimeInMs: t.PollerWaitTimeInMs,
+		EnableAutoConfig:   t.EnableAutoConfig,
+	}
+}
+
+func ToAutoConfigHint(t *apiv1.AutoConfigHint) *types.AutoConfigHint {
+	if t == nil {
+		return nil
+	}
+	return &types.AutoConfigHint{
+		PollerWaitTimeInMs: t.PollerWaitTimeInMs,
+		EnableAutoConfig:   t.EnableAutoConfig,
+	}
 }

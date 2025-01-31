@@ -38,6 +38,7 @@ import (
 	"go.uber.org/yarpc/yarpcerrors"
 
 	"github.com/uber/cadence/common/backoff"
+	cadence_errors "github.com/uber/cadence/common/errors"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/metrics"
@@ -63,6 +64,10 @@ const (
 	frontendServiceOperationMaxInterval        = 5 * time.Second
 	frontendServiceOperationExpirationInterval = 15 * time.Second
 
+	shardDistributorServiceOperationInitialInterval    = 200 * time.Millisecond
+	shardDistributorServiceOperationMaxInterval        = 10 * time.Second
+	shardDistributorServiceOperationExpirationInterval = 15 * time.Second
+
 	adminServiceOperationInitialInterval    = 200 * time.Millisecond
 	adminServiceOperationMaxInterval        = 5 * time.Second
 	adminServiceOperationExpirationInterval = 15 * time.Second
@@ -78,6 +83,10 @@ const (
 	replicationServiceBusyInitialInterval    = 2 * time.Second
 	replicationServiceBusyMaxInterval        = 10 * time.Second
 	replicationServiceBusyExpirationInterval = 5 * time.Minute
+
+	taskCompleterInitialInterval    = 1 * time.Second
+	taskCompleterMaxInterval        = 10 * time.Second
+	taskCompleterExpirationInterval = 5 * time.Minute
 
 	contextExpireThreshold = 10 * time.Millisecond
 
@@ -108,6 +117,7 @@ var (
 	ErrContextTimeoutNotSet = &types.BadRequestError{Message: "Context timeout is not set."}
 	// ErrDecisionResultCountTooLarge error for decision result count exceeds limit
 	ErrDecisionResultCountTooLarge = &types.BadRequestError{Message: "Decision result count exceeds limit."}
+	stickyTaskListMetricTag        = metrics.TaskListTag("__sticky__")
 )
 
 // AwaitWaitGroup calls Wait on the given wait
@@ -165,6 +175,14 @@ func CreateFrontendServiceRetryPolicy() backoff.RetryPolicy {
 	return policy
 }
 
+func CreateShardDistributorServiceRetryPolicy() backoff.RetryPolicy {
+	policy := backoff.NewExponentialRetryPolicy(shardDistributorServiceOperationInitialInterval)
+	policy.SetMaximumInterval(shardDistributorServiceOperationMaxInterval)
+	policy.SetExpirationInterval(shardDistributorServiceOperationExpirationInterval)
+
+	return policy
+}
+
 // CreateAdminServiceRetryPolicy creates a retry policy for calls to matching service
 func CreateAdminServiceRetryPolicy() backoff.RetryPolicy {
 	policy := backoff.NewExponentialRetryPolicy(adminServiceOperationInitialInterval)
@@ -197,6 +215,15 @@ func CreateReplicationServiceBusyRetryPolicy() backoff.RetryPolicy {
 	policy := backoff.NewExponentialRetryPolicy(replicationServiceBusyInitialInterval)
 	policy.SetMaximumInterval(replicationServiceBusyMaxInterval)
 	policy.SetExpirationInterval(replicationServiceBusyExpirationInterval)
+
+	return policy
+}
+
+// CreateTaskCompleterRetryPolicy creates a retry policy to handle tasks not being started
+func CreateTaskCompleterRetryPolicy() backoff.RetryPolicy {
+	policy := backoff.NewExponentialRetryPolicy(taskCompleterInitialInterval)
+	policy.SetMaximumInterval(taskCompleterMaxInterval)
+	policy.SetExpirationInterval(taskCompleterExpirationInterval)
 
 	return policy
 }
@@ -243,14 +270,33 @@ func ToServiceTransientError(err error) error {
 	return yarpcerrors.Newf(yarpcerrors.CodeUnavailable, err.Error())
 }
 
+// HistoryRetryFuncFrontendExceptions checks if an error should be retried
+// in a call from frontend
+func FrontendRetry(err error) bool {
+	var sbErr *types.ServiceBusyError
+	if errors.As(err, &sbErr) {
+		// If the service busy error is due to workflow id rate limiting, proxy it to the caller
+		return sbErr.Reason != WorkflowIDRateLimitReason
+	}
+	return IsServiceTransientError(err)
+}
+
+// IsExpectedError checks if an error is expected to happen in normal operation of the system
+func IsExpectedError(err error) bool {
+	return IsServiceTransientError(err) ||
+		IsEntityNotExistsError(err) ||
+		errors.As(err, new(*types.WorkflowExecutionAlreadyCompletedError))
+}
+
 // IsServiceTransientError checks if the error is a transient error.
 func IsServiceTransientError(err error) bool {
 
 	var (
-		typesInternalServiceError    *types.InternalServiceError
-		typesServiceBusyError        *types.ServiceBusyError
-		typesShardOwnershipLostError *types.ShardOwnershipLostError
-		yarpcErrorsStatus            *yarpcerrors.Status
+		typesInternalServiceError        *types.InternalServiceError
+		typesServiceBusyError            *types.ServiceBusyError
+		typesShardOwnershipLostError     *types.ShardOwnershipLostError
+		typesTaskListNotOwnedByHostError *cadence_errors.TaskListNotOwnedByHostError
+		yarpcErrorsStatus                *yarpcerrors.Status
 	)
 
 	switch {
@@ -259,6 +305,8 @@ func IsServiceTransientError(err error) bool {
 	case errors.As(err, &typesServiceBusyError):
 		return true
 	case errors.As(err, &typesShardOwnershipLostError):
+		return true
+	case errors.As(err, &typesTaskListNotOwnedByHostError):
 		return true
 	case errors.As(err, &yarpcErrorsStatus):
 		// We only selectively retry the following yarpc errors client can safe retry with a backoff
@@ -529,22 +577,34 @@ func CreateHistoryStartWorkflowRequest(
 
 	delayStartSeconds := startRequest.GetDelayStartSeconds()
 	jitterStartSeconds := startRequest.GetJitterStartSeconds()
-	firstDecisionTaskBackoffSeconds := delayStartSeconds
-	if len(startRequest.GetCronSchedule()) > 0 {
-		delayedStartTime := now.Add(time.Second * time.Duration(delayStartSeconds))
-		var err error
-		firstDecisionTaskBackoffSeconds, err = backoff.GetBackoffForNextScheduleInSeconds(
-			startRequest.GetCronSchedule(), delayedStartTime, delayedStartTime, jitterStartSeconds)
-		if err != nil {
-			return nil, err
-		}
+	firstRunAtTimestamp := startRequest.GetFirstRunAtTimeStamp()
 
-		// backoff seconds was calculated based on delayed start time, so we need to
-		// add the delayStartSeconds to that backoff.
-		firstDecisionTaskBackoffSeconds += delayStartSeconds
-	} else if jitterStartSeconds > 0 {
-		// Add a random jitter to start time, if requested.
-		firstDecisionTaskBackoffSeconds += rand.Int31n(jitterStartSeconds + 1)
+	firstDecisionTaskBackoffSeconds := delayStartSeconds
+
+	// if the user specified a timestamp for the first run, we will use that as the start time,
+	// ignoring the delayStartSeconds, jitterStartSeconds, and cronSchedule
+	// The following condition guarantees two things:
+	// - The logic is only triggered when the user specifies a first run timestamp
+	// - AND that timestamp is only triggered ONCE hence not interfering with other scheduling logic
+	if firstRunAtTimestamp > now.UnixNano() {
+		firstDecisionTaskBackoffSeconds = int32((firstRunAtTimestamp - now.UnixNano()) / int64(time.Second))
+	} else {
+		if len(startRequest.GetCronSchedule()) > 0 {
+			delayedStartTime := now.Add(time.Second * time.Duration(delayStartSeconds))
+			var err error
+			firstDecisionTaskBackoffSeconds, err = backoff.GetBackoffForNextScheduleInSeconds(
+				startRequest.GetCronSchedule(), delayedStartTime, delayedStartTime, jitterStartSeconds)
+			if err != nil {
+				return nil, err
+			}
+
+			// backoff seconds was calculated based on delayed start time, so we need to
+			// add the delayStartSeconds to that backoff.
+			firstDecisionTaskBackoffSeconds += delayStartSeconds
+		} else if jitterStartSeconds > 0 {
+			// Add a random jitter to start time, if requested.
+			firstDecisionTaskBackoffSeconds += rand.Int31n(jitterStartSeconds + 1)
+		}
 	}
 
 	histRequest.FirstDecisionTaskBackoffSeconds = Int32Ptr(firstDecisionTaskBackoffSeconds)
@@ -566,6 +626,7 @@ func CheckEventBlobSizeLimit(
 	warnLimit int,
 	errorLimit int,
 	domainID string,
+	domainName string,
 	workflowID string,
 	runID string,
 	scope metrics.Scope,
@@ -575,21 +636,36 @@ func CheckEventBlobSizeLimit(
 
 	scope.RecordTimer(metrics.EventBlobSize, time.Duration(actualSize))
 
-	if actualSize > warnLimit {
-		if logger != nil {
-			logger.Warn("Blob size exceeds limit.",
-				tag.WorkflowDomainID(domainID),
-				tag.WorkflowID(workflowID),
-				tag.WorkflowRunID(runID),
-				tag.WorkflowSize(int64(actualSize)),
-				blobSizeViolationOperationTag)
-		}
+	if errorLimit < warnLimit {
+		logger.Warn("Error limit is less than warn limit.", tag.WorkflowDomainName(domainName), tag.WorkflowDomainID(domainID))
 
-		if actualSize > errorLimit {
-			return ErrBlobSizeExceedsLimit
-		}
+		warnLimit = errorLimit
 	}
-	return nil
+
+	if actualSize <= warnLimit {
+		return nil
+	}
+
+	tags := []tag.Tag{
+		tag.WorkflowDomainName(domainName),
+		tag.WorkflowDomainID(domainID),
+		tag.WorkflowID(workflowID),
+		tag.WorkflowRunID(runID),
+		tag.WorkflowSize(int64(actualSize)),
+		blobSizeViolationOperationTag,
+	}
+
+	if actualSize <= errorLimit {
+		logger.Warn("Blob size close to the limit.", tags...)
+
+		return nil
+	}
+
+	scope.Tagged(metrics.DomainTag(domainName)).IncCounter(metrics.EventBlobSizeExceedLimit)
+
+	logger.Error("Blob size exceeds limit.", tags...)
+
+	return ErrBlobSizeExceedsLimit
 }
 
 // ValidateLongPollContextTimeout check if the context timeout for a long poll handler is too short or below a normal value.
@@ -872,7 +948,7 @@ func DeserializeSearchAttributeValue(value []byte, valueType types.IndexedValueT
 
 // IsAdvancedVisibilityWritingEnabled returns true if we should write to advanced visibility
 func IsAdvancedVisibilityWritingEnabled(advancedVisibilityWritingMode string, isAdvancedVisConfigExist bool) bool {
-	return advancedVisibilityWritingMode != AdvancedVisibilityWritingModeOff && isAdvancedVisConfigExist
+	return advancedVisibilityWritingMode != AdvancedVisibilityModeOff && isAdvancedVisConfigExist
 }
 
 // IsAdvancedVisibilityReadingEnabled returns true if we should read from advanced visibility
@@ -1007,4 +1083,26 @@ func IntersectionStringSlice(a, b []string) []string {
 		}
 	}
 	return result
+}
+
+// NewPerTaskListScope creates a tasklist metrics scope
+func NewPerTaskListScope(
+	domainName string,
+	taskListName string,
+	taskListKind types.TaskListKind,
+	client metrics.Client,
+	scopeIdx int,
+) metrics.Scope {
+	domainTag := metrics.DomainUnknownTag()
+	taskListTag := metrics.TaskListUnknownTag()
+	if domainName != "" {
+		domainTag = metrics.DomainTag(domainName)
+	}
+	if taskListName != "" && taskListKind != types.TaskListKindSticky {
+		taskListTag = metrics.TaskListTag(taskListName)
+	}
+	if taskListKind == types.TaskListKindSticky {
+		taskListTag = stickyTaskListMetricTag
+	}
+	return client.Scope(scopeIdx, domainTag, taskListTag)
 }

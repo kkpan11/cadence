@@ -24,10 +24,10 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/uber-go/tally"
+	"go.uber.org/mock/gomock"
 
 	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/log"
@@ -91,7 +91,7 @@ func (s *splitPolicySuite) TestPendingTaskSplitPolicy() {
 
 	testCases := []struct {
 		currentState             ProcessingQueueState
-		numPendingTasksPerDomain map[string]int //domainID -> number of pending tasks
+		numPendingTasksPerDomain map[string]int // domainID -> number of pending tasks
 		expectedNewStates        []ProcessingQueueState
 	}{
 		{
@@ -565,7 +565,7 @@ func (s *splitPolicySuite) TestRandomSplitPolicy() {
 	testCases := []struct {
 		currentState             ProcessingQueueState
 		splitProbability         float64
-		numPendingTasksPerDomain map[string]int //domainID -> number of pending tasks
+		numPendingTasksPerDomain map[string]int // domainID -> number of pending tasks
 		expectedNewStates        []ProcessingQueueState
 	}{
 		{

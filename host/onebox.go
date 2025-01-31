@@ -29,17 +29,17 @@ import (
 
 	"github.com/pborman/uuid"
 	"github.com/uber-go/tally"
+	"github.com/uber-go/tally/prometheus"
 	apiv1 "github.com/uber/cadence-idl/go/proto/api/v1"
 	cwsc "go.uber.org/cadence/.gen/go/cadence/workflowserviceclient"
 	"go.uber.org/cadence/compatibility"
 	"go.uber.org/yarpc"
 	"go.uber.org/yarpc/api/transport"
-	"go.uber.org/yarpc/transport/grpc"
-	"go.uber.org/yarpc/transport/tchannel"
 
 	adminClient "github.com/uber/cadence/client/admin"
 	frontendClient "github.com/uber/cadence/client/frontend"
 	historyClient "github.com/uber/cadence/client/history"
+	matchingClient "github.com/uber/cadence/client/matching"
 	"github.com/uber/cadence/common"
 	carchiver "github.com/uber/cadence/common/archiver"
 	"github.com/uber/cadence/common/archiver/provider"
@@ -53,6 +53,7 @@ import (
 	"github.com/uber/cadence/common/domain"
 	"github.com/uber/cadence/common/dynamicconfig"
 	"github.com/uber/cadence/common/elasticsearch"
+	"github.com/uber/cadence/common/isolationgroup/isolationgroupapi"
 	"github.com/uber/cadence/common/log"
 	"github.com/uber/cadence/common/log/tag"
 	"github.com/uber/cadence/common/membership"
@@ -83,18 +84,21 @@ type Cadence interface {
 	GetFrontendClient() frontendClient.Client
 	FrontendHost() membership.HostInfo
 	GetHistoryClient() historyClient.Client
+	GetMatchingClient() matchingClient.Client
+	GetMatchingClients() []matchingClient.Client
 	GetExecutionManagerFactory() persistence.ExecutionManagerFactory
 }
 
 type (
 	cadenceImpl struct {
-		frontendService common.Daemon
-		matchingService common.Daemon
-		historyServices []common.Daemon
+		frontendService  common.Daemon
+		matchingServices []common.Daemon
+		historyServices  []common.Daemon
 
 		adminClient                   adminClient.Client
 		frontendClient                frontendClient.Client
 		historyClient                 historyClient.Client
+		matchingClients               []matchingClient.Client
 		logger                        log.Logger
 		clusterMetadata               cluster.Metadata
 		persistenceConfig             config.Persistence
@@ -112,6 +116,7 @@ type (
 		archiverMetadata              carchiver.ArchivalMetadata
 		archiverProvider              provider.ArchiverProvider
 		historyConfig                 *HistoryConfig
+		matchingConfig                *MatchingConfig
 		esConfig                      *config.ElasticSearchConfig
 		esClient                      elasticsearch.GenericClient
 		workerConfig                  *WorkerConfig
@@ -132,10 +137,132 @@ type (
 
 	// HistoryConfig contains configs for history service
 	HistoryConfig struct {
+		// When MockClient is set, rest of the configs are ignored, history service is not started
+		// and mock history client is passed to other services
+		MockClient HistoryClient
+
 		NumHistoryShards       int
 		NumHistoryHosts        int
 		HistoryCountLimitError int
 		HistoryCountLimitWarn  int
+	}
+
+	MatchingConfig struct {
+		// number of matching host can be at most 4 due to existing static port assignments in onebox.go.
+		// can be changed easily.
+		NumMatchingHosts int
+		SimulationConfig MatchingSimulationConfig
+	}
+
+	MatchingSimulationConfig struct {
+		// Number of task list write partitions defaults to 1
+		TaskListWritePartitions int
+
+		// Number of task list read partitions defaults to 1
+		TaskListReadPartitions int
+
+		// At most N polls will be forwarded at a time. defaults to 20
+		ForwarderMaxOutstandingPolls int
+
+		// At most N tasks will be forwarded at a time. defaults to 1
+		ForwarderMaxOutstandingTasks int
+
+		// Forwarder rps limit defaults to 10
+		ForwarderMaxRatePerSecond int
+
+		// Children per node. defaults to 20
+		ForwarderMaxChildrenPerNode int
+
+		// LocalPollWaitTime. defaults to 0ms.
+		LocalPollWaitTime time.Duration
+
+		// LocalTaskWaitTime. defaults to 0ms.
+		LocalTaskWaitTime time.Duration
+
+		// RecordDecisionTaskStartedTime. The amount of time spent by History to complete RecordDecisionTaskStarted
+		RecordDecisionTaskStartedTime time.Duration
+
+		// TasklistLoadBalancerStrategy the strategy of load balancer. defaults to "random".
+		TasklistLoadBalancerStrategy string
+
+		// The pollers that will be created to process
+		Pollers []SimulationPollerConfiguration
+
+		Tasks []SimulationTaskConfiguration
+
+		Backlogs []SimulationBacklogConfiguration
+
+		// GetPartitionConfigFromDB indicates whether to get the partition config from DB or not.
+		// This is a prerequisite for adaptive scaler.
+		GetPartitionConfigFromDB bool
+
+		// Adaptive scaler configurations
+		EnableAdaptiveScaler                bool
+		PartitionDownscaleFactor            float64
+		PartitionUpscaleRPS                 int
+		PartitionUpscaleSustainedDuration   time.Duration
+		PartitionDownscaleSustainedDuration time.Duration
+		AdaptiveScalerUpdateInterval        time.Duration
+		QPSTrackerInterval                  time.Duration
+		TaskIsolationDuration               time.Duration
+	}
+
+	SimulationPollerConfiguration struct {
+		// The isolation group that pollers will be created with. Optional.
+		IsolationGroup string
+		// The number of pollers that will be created with this configuration. Defaults to 1
+		NumPollers int
+		// TaskProcessTime. The amount of time spent by the poller in-between requests. Defaults to 1ms
+		TaskProcessTime time.Duration
+		// Poll request timeout defaults to 15 seconds
+		PollTimeout time.Duration
+	}
+
+	SimulationTaskConfiguration struct {
+		// The isolation groups that tasks will be evenly distributed between
+		IsolationGroups []string
+
+		// Number of task generators defaults to 1
+		NumTaskGenerators int
+
+		// Upper limit of tasks to generate. Task generators will stop if total number of tasks generated reaches MaxTaskToGenerate during simulation
+		// Defaults to 2k
+		MaxTaskToGenerate int
+
+		// Task generation QPS. Defaults to 40.
+		TasksPerSecond int
+
+		// The burst value for the rate limiter for task generation. Controls the maximum number of AddTask requests
+		// that can be sent concurrently. For example, if you have TasksPerSecond, TasksBurst, and NumTaskGenerators all
+		// set to 10 then every second you'll get 10 tasks added right at the start of the second. If you instead set
+		// TasksBurst to 1 then you'd get a steady stream of tasks, with one task every 100ms.
+		TasksBurst int
+
+		// OverTime is a list of TasksProduceSpec that will be used to change the qps over time.
+		// Each item has a duration and they will be applied in the given order.
+		// If this is set, TasksPerSecond and TasksBurst will be ignored.
+		OverTime []TasksProduceSpec
+	}
+
+	TasksProduceSpec struct {
+		// Task generation qps
+		TasksPerSecond int
+
+		// The burst value for the rate limiter for task generation.
+		TasksBurst int
+
+		// The duration for which the settings will be applied.
+		// If the duration is unset, the settings will be applied indefinitely.
+		Duration *time.Duration
+	}
+
+	SimulationBacklogConfiguration struct {
+		// The partition number
+		Partition int // Do not set it to 0, because it's not guaranteed to add backlog to partition 0
+		// The backlog count
+		BacklogCount int
+		// The weight of each isolation group, can be empty
+		IsolationGroups map[string]int
 	}
 
 	// CadenceParams contains everything needed to bootstrap Cadence
@@ -153,6 +280,7 @@ type (
 		ArchiverProvider              provider.ArchiverProvider
 		EnableReadHistoryFromArchival bool
 		HistoryConfig                 *HistoryConfig
+		MatchingConfig                *MatchingConfig
 		ESConfig                      *config.ElasticSearchConfig
 		ESClient                      elasticsearch.GenericClient
 		WorkerConfig                  *WorkerConfig
@@ -189,6 +317,7 @@ func NewCadence(params *CadenceParams) Cadence {
 		archiverMetadata:              params.ArchiverMetadata,
 		archiverProvider:              params.ArchiverProvider,
 		historyConfig:                 params.HistoryConfig,
+		matchingConfig:                params.MatchingConfig,
 		workerConfig:                  params.WorkerConfig,
 		mockAdminClient:               params.MockAdminClient,
 		domainReplicationTaskExecutor: params.DomainReplicationTaskExecutor,
@@ -211,7 +340,7 @@ func (c *cadenceImpl) enableWorker() bool {
 func (c *cadenceImpl) Start() error {
 	hosts := make(map[string][]membership.HostInfo)
 	hosts[service.Frontend] = []membership.HostInfo{c.FrontendHost()}
-	hosts[service.Matching] = []membership.HostInfo{c.MatchingServiceHost()}
+	hosts[service.Matching] = c.MatchingHosts()
 	hosts[service.History] = c.HistoryHosts()
 	if c.enableWorker() {
 		hosts[service.Worker] = []membership.HostInfo{c.WorkerServiceHost()}
@@ -224,8 +353,11 @@ func (c *cadenceImpl) Start() error {
 	}
 
 	var startWG sync.WaitGroup
-	startWG.Add(2)
+	startWG.Add(1)
 	go c.startHistory(hosts, &startWG)
+	startWG.Wait()
+
+	startWG.Add(1)
 	go c.startMatching(hosts, &startWG)
 	startWG.Wait()
 
@@ -243,16 +375,20 @@ func (c *cadenceImpl) Start() error {
 }
 
 func (c *cadenceImpl) Stop() {
+	serviceCount := 3
 	if c.enableWorker() {
-		c.shutdownWG.Add(4)
-	} else {
-		c.shutdownWG.Add(3)
+		serviceCount++
 	}
+
+	c.shutdownWG.Add(serviceCount)
 	c.frontendService.Stop()
 	for _, historyService := range c.historyServices {
 		historyService.Stop()
 	}
-	c.matchingService.Stop()
+	for _, matchingService := range c.matchingServices {
+		matchingService.Stop()
+	}
+
 	if c.workerConfig.EnableReplicator {
 		c.replicator.Stop()
 	}
@@ -334,7 +470,7 @@ func (c *cadenceImpl) HistoryHosts() []membership.HostInfo {
 	return hosts
 }
 
-func (c *cadenceImpl) HistoryPProfPort() []int {
+func (c *cadenceImpl) HistoryPProfPorts() []int {
 	var ports []int
 	var startPort int
 	switch c.clusterNo {
@@ -358,7 +494,8 @@ func (c *cadenceImpl) HistoryPProfPort() []int {
 	return ports
 }
 
-func (c *cadenceImpl) MatchingServiceHost() membership.HostInfo {
+func (c *cadenceImpl) MatchingHosts() []membership.HostInfo {
+	var hosts []membership.HostInfo
 	var tchan uint16
 	switch c.clusterNo {
 	case 0:
@@ -373,23 +510,64 @@ func (c *cadenceImpl) MatchingServiceHost() membership.HostInfo {
 		tchan = 7106
 	}
 
-	return newHost(tchan)
+	for i := 0; i < c.matchingConfig.NumMatchingHosts; i++ {
+		port := tchan + uint16(i)
+		hosts = append(hosts, newHost(uint16(port)))
+	}
 
+	c.logger.Info("Matching hosts", tag.Value(hosts))
+
+	return hosts
 }
 
-func (c *cadenceImpl) MatchingPProfPort() int {
+func (c *cadenceImpl) MatchingPProfPorts() []int {
+	var ports []int
+	var startPort int
 	switch c.clusterNo {
 	case 0:
-		return 7107
+		startPort = 7206
 	case 1:
-		return 8107
+		startPort = 8206
 	case 2:
-		return 9107
+		startPort = 9206
 	case 3:
-		return 10107
+		startPort = 10206
 	default:
-		return 7107
+		startPort = 7206
 	}
+
+	for i := 0; i < c.matchingConfig.NumMatchingHosts; i++ {
+		port := startPort + i
+		ports = append(ports, port)
+	}
+
+	c.logger.Info("Matching pprof ports", tag.Value(ports))
+	return ports
+}
+
+func (c *cadenceImpl) MatchingPrometheusPorts() []int {
+	var ports []int
+	var startPort int
+	switch c.clusterNo {
+	case 0:
+		startPort = 7306
+	case 1:
+		startPort = 8306
+	case 2:
+		startPort = 9306
+	case 3:
+		startPort = 10306
+	default:
+		startPort = 7306
+	}
+
+	for i := 0; i < c.matchingConfig.NumMatchingHosts; i++ {
+		port := startPort + i
+		ports = append(ports, port)
+	}
+
+	c.logger.Info("Matching prometheus ports", tag.Value(ports))
+	return ports
 }
 
 func (c *cadenceImpl) WorkerServiceHost() membership.HostInfo {
@@ -436,6 +614,14 @@ func (c *cadenceImpl) GetHistoryClient() historyClient.Client {
 	return c.historyClient
 }
 
+func (c *cadenceImpl) GetMatchingClient() matchingClient.Client {
+	return c.matchingClients[0]
+}
+
+func (c *cadenceImpl) GetMatchingClients() []matchingClient.Client {
+	return c.matchingClients
+}
+
 func (c *cadenceImpl) startFrontend(hosts map[string][]membership.HostInfo, startWG *sync.WaitGroup) {
 	params := new(resource.Params)
 	params.ClusterRedirectionPolicy = &config.ClusterRedirectionPolicy{}
@@ -444,12 +630,12 @@ func (c *cadenceImpl) startFrontend(hosts map[string][]membership.HostInfo, star
 	params.ThrottledLogger = c.logger
 	params.TimeSource = c.timeSource
 	params.PProfInitializer = newPProfInitializerImpl(c.logger, c.FrontendPProfPort())
-	params.RPCFactory = c.newRPCFactory(service.Frontend, c.FrontendHost())
 	params.MetricScope = tally.NewTestScope(service.Frontend, make(map[string]string))
-	params.MembershipResolver = newMembershipResolver(params.Name, hosts)
+	params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
+	params.RPCFactory = c.newRPCFactory(service.Frontend, c.FrontendHost(), params.MetricsClient)
+	params.MembershipResolver = newMembershipResolver(params.Name, hosts, c.FrontendHost())
 	params.ClusterMetadata = c.clusterMetadata
 	params.MessagingClient = c.messagingClient
-	params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
 	params.DynamicConfig = newIntegrationConfigClient(dynamicconfig.NewNopClient(), c.frontendDynCfgOverrides)
 	params.ArchivalMetadata = c.archiverMetadata
 	params.ArchiverProvider = c.archiverProvider
@@ -457,6 +643,7 @@ func (c *cadenceImpl) startFrontend(hosts map[string][]membership.HostInfo, star
 	params.ESClient = c.esClient
 	params.PinotConfig = c.pinotConfig
 	params.PinotClient = c.pinotClient
+	params.GetIsolationGroups = getFromDynamicConfig(params)
 	var err error
 	authorizer, err := authorization.NewAuthorizer(c.authorizationConfig, params.Logger, nil)
 	if err != nil {
@@ -471,7 +658,7 @@ func (c *cadenceImpl) startFrontend(hosts map[string][]membership.HostInfo, star
 	if c.pinotConfig != nil {
 		pinotDataStoreName := "pinot-visibility"
 		params.PersistenceConfig.AdvancedVisibilityStore = pinotDataStoreName
-		params.DynamicConfig.UpdateValue(dynamicconfig.EnableReadVisibilityFromES, false)
+		params.DynamicConfig.UpdateValue(dynamicconfig.ReadVisibilityStoreName, common.VisibilityModePinot)
 		params.PersistenceConfig.DataStores[pinotDataStoreName] = config.DataStore{
 			Pinot: c.pinotConfig,
 		}
@@ -509,29 +696,29 @@ func (c *cadenceImpl) startFrontend(hosts map[string][]membership.HostInfo, star
 	c.adminClient = NewAdminClient(frontendService.GetDispatcher())
 	go frontendService.Start()
 
+	c.logger.Info("Started frontend service")
 	startWG.Done()
+
 	<-c.shutdownCh
 	c.shutdownWG.Done()
 }
 
-func (c *cadenceImpl) startHistory(
-	hosts map[string][]membership.HostInfo,
-	startWG *sync.WaitGroup,
-) {
-	pprofPorts := c.HistoryPProfPort()
-	for i, hostport := range c.HistoryHosts() {
+func (c *cadenceImpl) startHistory(hosts map[string][]membership.HostInfo, startWG *sync.WaitGroup) {
+	pprofPorts := c.HistoryPProfPorts()
+	historyHosts := c.HistoryHosts()
+	for i, hostport := range historyHosts {
 		params := new(resource.Params)
 		params.Name = service.History
 		params.Logger = c.logger
 		params.ThrottledLogger = c.logger
 		params.TimeSource = c.timeSource
 		params.PProfInitializer = newPProfInitializerImpl(c.logger, pprofPorts[i])
-		params.RPCFactory = c.newRPCFactory(service.History, hostport)
 		params.MetricScope = tally.NewTestScope(service.History, make(map[string]string))
-		params.MembershipResolver = newMembershipResolver(params.Name, hosts)
+		params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
+		params.RPCFactory = c.newRPCFactory(service.History, hostport, params.MetricsClient)
+		params.MembershipResolver = newMembershipResolver(params.Name, hosts, hostport)
 		params.ClusterMetadata = c.clusterMetadata
 		params.MessagingClient = c.messagingClient
-		params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
 		integrationClient := newIntegrationConfigClient(dynamicconfig.NewNopClient(), c.historyDynCfgOverrides)
 		c.overrideHistoryDynamicConfig(integrationClient)
 		params.DynamicConfig = integrationClient
@@ -540,6 +727,8 @@ func (c *cadenceImpl) startHistory(
 		params.ArchiverProvider = c.archiverProvider
 		params.ESConfig = c.esConfig
 		params.ESClient = c.esClient
+		params.PinotConfig = c.pinotConfig
+		params.GetIsolationGroups = getFromDynamicConfig(params)
 
 		var err error
 		params.PersistenceConfig, err = copyPersistenceConfig(c.persistenceConfig)
@@ -554,6 +743,7 @@ func (c *cadenceImpl) startHistory(
 				Pinot:         c.pinotConfig,
 				ElasticSearch: c.esConfig,
 			}
+			params.DynamicConfig.UpdateValue(dynamicconfig.WriteVisibilityStoreName, common.VisibilityModePinot)
 		} else if c.esConfig != nil {
 			esDataStoreName := "es-visibility"
 			params.PersistenceConfig.AdvancedVisibilityStore = esDataStoreName
@@ -587,49 +777,78 @@ func (c *cadenceImpl) startHistory(
 	}
 
 	startWG.Done()
+	c.logger.Info(fmt.Sprintf("Started %d history services", len(c.historyServices)))
+
 	<-c.shutdownCh
 	c.shutdownWG.Done()
 }
 
 func (c *cadenceImpl) startMatching(hosts map[string][]membership.HostInfo, startWG *sync.WaitGroup) {
+	pprofPorts := c.MatchingPProfPorts()
+	promPorts := c.MatchingPrometheusPorts()
+	for i, hostport := range c.MatchingHosts() {
+		hostport.Identity()
+		matchingHost := fmt.Sprintf("matching-host-%d:%s", i, hostport.Identity())
+		params := new(resource.Params)
+		params.Name = service.Matching
+		params.Logger = c.logger.WithTags(tag.Dynamic("matching-host", matchingHost))
+		params.ThrottledLogger = c.logger
+		params.TimeSource = c.timeSource
+		params.PProfInitializer = newPProfInitializerImpl(c.logger, pprofPorts[i])
+		metricsCfg := config.Metrics{
+			Prometheus: &prometheus.Configuration{
+				TimerType:     "histogram",
+				ListenAddress: fmt.Sprintf(":%d", promPorts[i]),
+			},
+		}
+		params.MetricScope = metricsCfg.NewScope(c.logger, service.Matching)
+		params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
+		params.RPCFactory = c.newRPCFactory(service.Matching, hostport, params.MetricsClient)
+		params.MembershipResolver = newMembershipResolver(params.Name, hosts, hostport)
+		params.ClusterMetadata = c.clusterMetadata
+		params.DynamicConfig = newIntegrationConfigClient(dynamicconfig.NewNopClient(), c.matchingDynCfgOverrides)
+		params.ArchivalMetadata = c.archiverMetadata
+		params.ArchiverProvider = c.archiverProvider
+		params.GetIsolationGroups = getFromDynamicConfig(params)
 
-	params := new(resource.Params)
-	params.Name = service.Matching
-	params.Logger = c.logger
-	params.ThrottledLogger = c.logger
-	params.TimeSource = c.timeSource
-	params.PProfInitializer = newPProfInitializerImpl(c.logger, c.MatchingPProfPort())
-	params.RPCFactory = c.newRPCFactory(service.Matching, c.MatchingServiceHost())
-	params.MetricScope = tally.NewTestScope(service.Matching, make(map[string]string))
-	params.MembershipResolver = newMembershipResolver(params.Name, hosts)
-	params.ClusterMetadata = c.clusterMetadata
-	params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
-	params.DynamicConfig = newIntegrationConfigClient(dynamicconfig.NewNopClient(), c.matchingDynCfgOverrides)
-	params.ArchivalMetadata = c.archiverMetadata
-	params.ArchiverProvider = c.archiverProvider
+		var err error
+		params.PersistenceConfig, err = copyPersistenceConfig(c.persistenceConfig)
+		if err != nil {
+			c.logger.Fatal("Failed to copy persistence config for matching", tag.Error(err))
+		}
 
-	var err error
-	params.PersistenceConfig, err = copyPersistenceConfig(c.persistenceConfig)
-	if err != nil {
-		c.logger.Fatal("Failed to copy persistence config for matching", tag.Error(err))
-	}
+		if c.historyConfig.MockClient != nil {
+			params.HistoryClientFn = func() historyClient.Client {
+				return c.historyConfig.MockClient
+			}
+		}
 
-	matchingService, err := matching.NewService(params)
-	if err != nil {
-		params.Logger.Fatal("unable to start matching service", tag.Error(err))
-	}
-	if c.mockAdminClient != nil {
+		matchingService, err := matching.NewService(params)
+		if err != nil {
+			params.Logger.Fatal("unable to start matching service", tag.Error(err))
+		}
+
 		clientBean := matchingService.GetClientBean()
-		if clientBean != nil {
+		if c.mockAdminClient != nil {
 			for serviceName, client := range c.mockAdminClient {
 				clientBean.SetRemoteAdminClient(serviceName, client)
 			}
 		}
+
+		// When there are multiple matching hosts the last client will overwrite previous ones.
+		// It should be fine because the underlying client bean logic should still pick the right destination.
+		matchingClient, err := clientBean.GetMatchingClient(matchingService.GetDomainCache().GetDomainName)
+		if err != nil {
+			params.Logger.Fatal("unable to get matching client", tag.Error(err))
+		}
+		c.matchingClients = append(c.matchingClients, matchingClient)
+		c.matchingServices = append(c.matchingServices, matchingService)
+		go matchingService.Start()
 	}
-	c.matchingService = matchingService
-	go c.matchingService.Start()
 
 	startWG.Done()
+	c.logger.Info(fmt.Sprintf("Started %d matching services", len(c.matchingServices)))
+
 	<-c.shutdownCh
 	c.shutdownWG.Done()
 }
@@ -643,14 +862,15 @@ func (c *cadenceImpl) startWorker(hosts map[string][]membership.HostInfo, startW
 	params.ThrottledLogger = c.logger
 	params.TimeSource = c.timeSource
 	params.PProfInitializer = newPProfInitializerImpl(c.logger, c.WorkerPProfPort())
-	params.RPCFactory = c.newRPCFactory(service.Worker, c.WorkerServiceHost())
 	params.MetricScope = tally.NewTestScope(service.Worker, make(map[string]string))
-	params.MembershipResolver = newMembershipResolver(params.Name, hosts)
-	params.ClusterMetadata = c.clusterMetadata
 	params.MetricsClient = metrics.NewClient(params.MetricScope, service.GetMetricsServiceIdx(params.Name, c.logger))
+	params.RPCFactory = c.newRPCFactory(service.Worker, c.WorkerServiceHost(), params.MetricsClient)
+	params.MembershipResolver = newMembershipResolver(params.Name, hosts, c.WorkerServiceHost())
+	params.ClusterMetadata = c.clusterMetadata
 	params.DynamicConfig = newIntegrationConfigClient(dynamicconfig.NewNopClient(), c.workerDynCfgOverrides)
 	params.ArchivalMetadata = c.archiverMetadata
 	params.ArchiverProvider = c.archiverProvider
+	params.GetIsolationGroups = getFromDynamicConfig(params)
 
 	var err error
 	params.PersistenceConfig, err = copyPersistenceConfig(c.persistenceConfig)
@@ -716,7 +936,9 @@ func (c *cadenceImpl) startWorker(hosts map[string][]membership.HostInfo, startW
 		defer cm.Stop()
 	}
 
+	c.logger.Info("Started worker service")
 	startWG.Done()
+
 	<-c.shutdownCh
 	if c.workerConfig.EnableReplicator {
 		replicatorDomainCache.Stop()
@@ -724,7 +946,6 @@ func (c *cadenceImpl) startWorker(hosts map[string][]membership.HostInfo, startW
 	if c.workerConfig.EnableArchiver {
 		clientWorkerDomainCache.Stop()
 	}
-
 }
 
 func (c *cadenceImpl) startWorkerReplicator(svc Service) {
@@ -777,13 +998,14 @@ func (c *cadenceImpl) startWorkerClientWorker(params *resource.Params, svc Servi
 }
 
 func (c *cadenceImpl) startWorkerIndexer(params *resource.Params, service Service) {
-	params.DynamicConfig.UpdateValue(dynamicconfig.AdvancedVisibilityWritingMode, common.AdvancedVisibilityWritingModeDual)
+	params.DynamicConfig.UpdateValue(dynamicconfig.WriteVisibilityStoreName, common.VisibilityModeES)
 	workerConfig := worker.NewConfig(params)
 	c.indexer = indexer.NewIndexer(
 		workerConfig.IndexerCfg,
 		c.messagingClient,
 		c.esClient,
 		c.esConfig.Indices[common.VisibilityAppName],
+		c.esConfig.ConsumerName,
 		c.logger,
 		service.GetMetricsClient())
 	if err := c.indexer.Start(); err != nil {
@@ -825,12 +1047,10 @@ func (c *cadenceImpl) GetExecutionManagerFactory() persistence.ExecutionManagerF
 }
 
 func (c *cadenceImpl) overrideHistoryDynamicConfig(client *dynamicClient) {
-	client.OverrideValue(dynamicconfig.HistoryMgrNumConns, c.historyConfig.NumHistoryShards)
-	client.OverrideValue(dynamicconfig.ExecutionMgrNumConns, c.historyConfig.NumHistoryShards)
 	client.OverrideValue(dynamicconfig.ReplicationTaskProcessorStartWait, time.Nanosecond)
 
 	if c.workerConfig.EnableIndexer {
-		client.OverrideValue(dynamicconfig.AdvancedVisibilityWritingMode, common.AdvancedVisibilityWritingModeDual)
+		client.OverrideValue(dynamicconfig.WriteVisibilityStoreName, common.VisibilityModeES)
 	}
 	if c.historyConfig.HistoryCountLimitWarn != 0 {
 		client.OverrideValue(dynamicconfig.HistoryCountLimitWarn, c.historyConfig.HistoryCountLimitWarn)
@@ -862,8 +1082,8 @@ func copyPersistenceConfig(pConfig config.Persistence) (config.Persistence, erro
 	return pConfig, nil
 }
 
-func newMembershipResolver(serviceName string, hosts map[string][]membership.HostInfo) membership.Resolver {
-	return NewSimpleResolver(serviceName, hosts)
+func newMembershipResolver(serviceName string, hosts map[string][]membership.HostInfo, currentHost membership.HostInfo) membership.Resolver {
+	return NewSimpleResolver(serviceName, hosts, currentHost)
 }
 
 func newPProfInitializerImpl(logger log.Logger, port int) common.PProfInitializer {
@@ -885,7 +1105,7 @@ func newPublicClient(dispatcher *yarpc.Dispatcher) cwsc.Interface {
 	)
 }
 
-func (c *cadenceImpl) newRPCFactory(serviceName string, host membership.HostInfo) common.RPCFactory {
+func (c *cadenceImpl) newRPCFactory(serviceName string, host membership.HostInfo, metricsCl metrics.Client) rpc.Factory {
 	tchannelAddress, err := host.GetNamedAddress(membership.PortTchannel)
 	if err != nil {
 		c.logger.Fatal("failed to get PortTchannel port from host", tag.Value(host), tag.Error(err))
@@ -901,21 +1121,27 @@ func (c *cadenceImpl) newRPCFactory(serviceName string, host membership.HostInfo
 		c.logger.Fatal("failed to get frontend PortGRPC", tag.Value(c.FrontendHost()), tag.Error(err))
 	}
 
+	directOutboundPCF := rpc.NewDirectPeerChooserFactory(serviceName, c.logger, metricsCl)
+	directConnRetainFn := func(opts ...dynamicconfig.FilterOption) bool { return false }
+
 	return rpc.NewFactory(c.logger, rpc.Params{
 		ServiceName:     serviceName,
 		TChannelAddress: tchannelAddress,
 		GRPCAddress:     grpcAddress,
 		InboundMiddleware: yarpc.InboundMiddleware{
-			Unary: &versionMiddleware{},
+			Unary: yarpc.UnaryInboundMiddleware(&versionMiddleware{}, &rpc.ClientPartitionConfigMiddleware{}, &rpc.ForwardPartitionConfigMiddleware{}),
+		},
+		OutboundMiddleware: yarpc.OutboundMiddleware{
+			Unary: &rpc.ForwardPartitionConfigMiddleware{},
 		},
 
 		// For integration tests to generate client out of the same outbound.
 		OutboundsBuilder: rpc.CombineOutbounds(
-			&singleGRPCOutbound{testOutboundName(serviceName), serviceName, grpcAddress},
-			&singleGRPCOutbound{rpc.OutboundPublicClient, service.Frontend, frontendGrpcAddress},
+			rpc.NewSingleGRPCOutboundBuilder(testOutboundName(serviceName), serviceName, grpcAddress),
+			rpc.NewSingleGRPCOutboundBuilder(rpc.OutboundPublicClient, service.Frontend, frontendGrpcAddress),
 			rpc.NewCrossDCOutbounds(c.clusterMetadata.GetAllClusterInfo(), rpc.NewDNSPeerChooserFactory(0, c.logger)),
-			rpc.NewDirectOutbound(service.History, true, nil),
-			rpc.NewDirectOutbound(service.Matching, true, nil),
+			rpc.NewDirectOutboundBuilder(service.History, true, nil, directOutboundPCF, directConnRetainFn),
+			rpc.NewDirectOutboundBuilder(service.Matching, true, nil, directOutboundPCF, directConnRetainFn),
 		),
 	})
 }
@@ -923,21 +1149,6 @@ func (c *cadenceImpl) newRPCFactory(serviceName string, host membership.HostInfo
 // testOutbound prefixes outbound with "test-" to not clash with other real Cadence outbounds.
 func testOutboundName(name string) string {
 	return "test-" + name
-}
-
-type singleGRPCOutbound struct {
-	outboundName string
-	serviceName  string
-	address      string
-}
-
-func (b singleGRPCOutbound) Build(grpc *grpc.Transport, _ *tchannel.Transport) (yarpc.Outbounds, error) {
-	return yarpc.Outbounds{
-		b.outboundName: {
-			ServiceName: b.serviceName,
-			Unary:       grpc.NewSingleOutbound(b.address),
-		},
-	}, nil
 }
 
 type versionMiddleware struct {
@@ -949,4 +1160,20 @@ func (vm *versionMiddleware) Handle(ctx context.Context, req *transport.Request,
 		With(common.ClientImplHeaderName, cc.GoSDK)
 
 	return h.Handle(ctx, req, resw)
+}
+
+func getFromDynamicConfig(params *resource.Params) func() []string {
+	return func() []string {
+		list, err := params.DynamicConfig.GetListValue(dynamicconfig.AllIsolationGroups, nil)
+		if err != nil {
+			params.Logger.Error("failed to get isolation groups from config", tag.Error(err))
+			return nil
+		}
+		res, err := isolationgroupapi.MapAllIsolationGroupsResponse(list)
+		if err != nil {
+			params.Logger.Error("failed to map isolation groups from config", tag.Error(err))
+			return nil
+		}
+		return res
+	}
 }
